@@ -1474,3 +1474,7 @@ footer {
 .compact .cover:has(img) img {
   height: 100%;
 }
+
+.ownership-list {padding:0;list-style:none;display:grid;gap:10px;}
+.ownership-list li {display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px;border:1px solid var(--border);border-radius:8px;}
+.catalogue-detail h3 {margin-top:28px;}

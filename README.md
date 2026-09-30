@@ -35,7 +35,7 @@ Firebase web configuration is public by design; Firestore rules enforce access. 
 4. Replace `YOUR_GOOGLE_EMAIL` in `firestore.rules` with your Google account email and publish these rules in the Firestore console. Only that verified Google account can read or write its library. If using the CLI, run `npx firebase-tools deploy --only firestore:rules --project YOUR_PROJECT`.
 5. Sign in. Local games stay separate; after signing in, use the Review local games banner (or Connections & settings) to preview and migrate them into your account.
 
-Each game is its own document. Transactions merge progress entries by ID to preserve concurrent journals. Game metadata is last-write-wins. Cloud saves require a connection; errors are shown and can be retried. Firestore documents have a size limit; unusually long journals may eventually need a subcollection migration.
+Catalogue games and active playthroughs have separate documents. One catalogue entry stores all owned platforms and editions. Start a playthrough from its catalogue entry to track a particular platform. Completing the main story archives its journal under the catalogue entry, marks the game completed, and removes that playthrough from the active list. Other active playthroughs remain independent. Existing platform records consolidate automatically on sign-in; original records are retained for recovery. Transactions merge progress entries by ID to preserve concurrent journals. Game metadata is last-write-wins. Cloud saves require a connection; errors are shown and can be retried. Firestore documents have a size limit; unusually long journals may eventually need a subcollection migration.
 
 ## Configure the secure backend
 
@@ -69,9 +69,9 @@ The deployed app is available at https://pravityo.github.io/questracker/. Accoun
 
 ## Imports
 
-CLZ CSV import supports UTF-8 BOM, quoted commas, escaped quotes, multiline values and CRLF. Map title, platform, genre, release date, developer, edition, collection and status. Review before saving. Duplicates are identified by case-insensitive title + platform; existing progress is preserved. Different editions on the same platform currently count as duplicates. Steam import requires a 17-digit Steam ID, public game details and a server-side Steam key. It imports owned titles and covers; genres/release dates can be edited afterward. PlayStation and Nintendo are supported through CLZ imports/manual entry, not direct account sync.
+CLZ CSV import supports UTF-8 BOM, quoted commas, escaped quotes, multiline values and CRLF. Map title, platform, genre, release date, developer, edition, collection and status. Review before saving. Catalogue entries consolidate by normalized title; ownership copies are distinguished by platform and edition. Existing progress is preserved. Distinct titles, including remasters with different names, remain separate. Steam import requires a 17-digit Steam ID, public game details and a server-side Steam key. It imports owned titles and covers; genres/release dates can be edited afterward. PlayStation and Nintendo are supported through CLZ imports/manual entry, not direct account sync.
 
-CSV export includes metadata and current percentage. Full JSON backup includes journals, recaps and milestones. Backup restore previews additions and skips duplicates; it does not overwrite existing records.
+CSV export includes one row per active ownership copy and its metadata. Full JSON backups include catalogue entries, active playthroughs, archived journals, recaps, milestones and removed games. Restore merges matching records and journal entries without discarding existing progress. Large restores commit in batches.
 
 ## Progress and spoiler boundaries
 

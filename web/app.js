@@ -1,3 +1,20 @@
+import {
+  emptyLibrary,
+  catalogueId,
+  titleKey,
+  makeCatalogue,
+  mergeCatalogue,
+  migrateLegacy,
+  mergeLibraries,
+  applyPlaythrough,
+  projectLibrary,
+  catalogueGame,
+  hydrateRun,
+  importCopies,
+  playthroughRecord,
+  validateLibrary,
+} from "./library.js";
+import { commitModels, applyCommitted } from "./library-repository.js";
 import { progressErrorHTML } from "./progress-ui.js";
 import { enrichGame } from "./metadata.js";
 import {
@@ -24,7 +41,10 @@ let view = "owned",
   cloud = null,
   unsubscribe = null;
 const localKey = "questtracker.local.v1";
-let games = readLocal();
+const libraryKey = "questtracker.library.v2";
+let library = readDeviceLibrary();
+let games = projectLibrary(library);
+let demoLibrary = null;
 let toastTimer,
   modalVersion = 0,
   returnFocus = null,
@@ -40,7 +60,7 @@ try {
   );
 } catch {}
 function keepDraft(g, text) {
-  progressDrafts[key(g)] = text;
+  progressDrafts[g.recordType === "playthrough" ? g.id : key(g)] = text;
   sessionStorage.setItem(
     "questtracker.progress-drafts",
     JSON.stringify(progressDrafts),
@@ -51,8 +71,38 @@ let detailTab = "story";
 let authContinuation = null;
 let metadataQueueActive = false;
 const metadataBatchSeen = new Set();
-const activeGames = () => games.filter((g) => !g.deletedAt);
-const displayedGames = () => demoGames || activeGames();
+const activeGames = () =>
+  games.filter((g) => g.recordType === "catalogue" && !g.deletedAt);
+const currentLibrary = () => demoLibrary || library;
+const catalogueGames = () =>
+  currentLibrary()
+    .catalogue.filter((c) => !c.deletedAt)
+    .map(catalogueGame);
+const activeRuns = () =>
+  currentLibrary()
+    .playthroughs.filter((p) =>
+      currentLibrary().catalogue.some(
+        (c) =>
+          c.id === p.catalogueId &&
+          !c.deletedAt &&
+          !(c.completedPlaythroughs || []).some((a) => a.id === p.id),
+      ),
+    )
+    .map((p) =>
+      hydrateRun(
+        p,
+        currentLibrary().catalogue.find((c) => c.id === p.catalogueId),
+      ),
+    );
+const displayedGames = () =>
+  view === "progress" ? activeRuns() : catalogueGames();
+const existingImportCopies = () => importCopies(library);
+function rebuildLibrary() {
+  games = projectLibrary(library);
+}
+function persistDevice() {
+  localStorage.setItem(libraryKey, JSON.stringify(library));
+}
 const percentLabel = (g) =>
   `${g.history.at(-1)?.estimated ? "~" : ""}${g.percent}%`;
 let importBusy = false,
@@ -92,13 +142,23 @@ function draftGame() {
   };
 }
 
-function readLocal() {
+function readDeviceLibrary() {
   try {
-    return JSON.parse(localStorage.getItem(localKey) || "[]");
+    const saved = JSON.parse(localStorage.getItem(libraryKey) || "null");
+    if (saved?.version === 2) return saved;
+    const legacy = JSON.parse(localStorage.getItem(localKey) || "[]");
+    const migrated = migrateLegacy(emptyLibrary(), legacy);
+    if (legacy.length)
+      localStorage.setItem(libraryKey, JSON.stringify(migrated));
+    return migrated;
   } catch {
-    return [];
+    return emptyLibrary();
   }
 }
+function readLocal() {
+  return readDeviceLibrary().catalogue;
+}
+
 function toast(s) {
   $("#toast").textContent = s;
   $("#toast").style.display = "block";
@@ -158,79 +218,83 @@ $("#modal").addEventListener("close", () => {
   (target || $("#add-btn")).focus();
 });
 // Backdrop clicks do not silently discard forms or submitted updates.
-async function saveGame(g, { journalOnly = false, metadataOnly = false } = {}) {
+async function commitLibrary(
+  catIds,
+  runIds,
+  transition,
+  { allowLoading = false } = {},
+) {
   if (demoGames) throw Error("Exit the demo to change your library.");
-  if (user && syncStatus === "loading")
+  if (user && syncStatus === "loading" && !allowLoading)
     throw Error("Wait for your synced library to load.");
-  if (
-    (journalOnly || metadataOnly) &&
-    games.find((x) => x.id === g.id)?.deletedAt
-  )
-    throw Error("This game was removed.");
-  const ownerUid = user?.uid || null;
-  g = { ...g, updatedAt: Date.now() };
-  if (user && cloud) {
-    try {
-      await cloud.runTransaction(cloud.db, async (tx) => {
-        const ref = cloud.doc(cloud.db, "users", ownerUid, "games", g.id),
-          snap = await tx.get(ref);
-        if (snap.exists()) {
-          const remote = snap.data();
-          if (metadataOnly) {
-            if (remote.deletedAt) throw Error("This game was removed.");
-            g = { ...mergeMissingDetails(remote, g), id: g.id };
-          }
-          const merged = [
-            ...new Map(
-              [...(remote.history || []), ...g.history]
-                .sort(
-                  (a, b) => (a.recapUpdatedAt || 0) - (b.recapUpdatedAt || 0),
-                )
-                .map((h) => [h.id, h]),
-            ).values(),
-          ].sort((a, b) => a.date.localeCompare(b.date));
-          const last = merged.at(-1),
-            own = g.history.at(-1);
-          g = journalOnly
-            ? { ...remote, id: g.id, history: merged, updatedAt: Date.now() }
-            : { ...g, history: merged };
-          if (!journalOnly && last && last.id !== own?.id) {
-            g.percent = last.percent;
-            g.status = last.percent === 100 ? "completed" : "playing";
-          }
-        }
-        if (
-          (journalOnly || metadataOnly) &&
-          (!snap.exists() || snap.data().deletedAt)
-        )
-          throw Error("This game was deleted. Its recap will not recreate it.");
-        tx.set(ref, g);
-      });
-      $("#sync-state").textContent = "Synced across devices";
-    } catch (err) {
-      setSync("error", "Could not save your changes. " + err.message);
-      throw err;
+  const uid = user?.uid || null;
+  try {
+    if (user && cloud) {
+      const committed = await commitModels(
+        cloud,
+        uid,
+        catIds,
+        runIds,
+        transition,
+      );
+      if (user?.uid !== uid)
+        throw Error("Your account changed. Reopen the library.");
+      library = applyCommitted(library, committed);
+    } else {
+      library = transition(library);
+      persistDevice();
     }
+    rebuildLibrary();
+    if (!allowLoading) setSync(user ? "synced" : "local");
+  } catch (err) {
+    if (user?.uid === uid)
+      setSync("error", "Could not save your changes. " + err.message);
+    throw err;
   }
-  if ((user?.uid || null) !== ownerUid)
-    throw Error(
-      "Your account changed. Reopen your library to check the saved game.",
-    );
-  const index = games.findIndex((x) => x.id === g.id);
-  if (index < 0) games.push(g);
-  else games[index] = g;
-  if (!user) localStorage.setItem(localKey, JSON.stringify(games));
-  setSync(user ? "synced" : "local");
-  $("#sync-state").textContent = user
-    ? "Synced across devices"
-    : "Local library · this device only";
 }
+async function saveGame(
+  g,
+  { journalOnly = false, metadataOnly = false, replaceCopies = false } = {},
+) {
+  g = { ...g, updatedAt: Date.now() };
+  if (g.recordType === "playthrough" || g.catalogueId) {
+    await commitLibrary([g.catalogueId], [g.id], (state) =>
+      applyPlaythrough(state, g, { journalOnly }),
+    );
+  } else {
+    const input =
+      g.recordType === "catalogue"
+        ? makeCatalogue(g)
+        : makeCatalogue({ ...g, id: g.id || crypto.randomUUID() });
+    await commitLibrary([input.id], [], (state) => {
+      const old = state.catalogue.find((c) => c.id === input.id);
+      if (metadataOnly && (!old || old.deletedAt))
+        throw Error("This catalogue game was removed.");
+      const merged = mergeCatalogue(old, input, {
+        replaceMetadata: !metadataOnly,
+        replaceCopies,
+      });
+      if (Object.hasOwn(g, "deletedAt")) merged.deletedAt = g.deletedAt;
+      return {
+        ...state,
+        catalogue: [
+          ...state.catalogue.filter((c) => c.id !== input.id),
+          merged,
+        ],
+      };
+    });
+  }
+}
+
 async function removeGame(id) {
   const game = games.find((g) => g.id === id);
   if (game) await saveGame({ ...game, deletedAt: Date.now() });
 }
+function activeAndRemovedCatalogue() {
+  return games.filter((g) => g.recordType === "catalogue" && g.deletedAt);
+}
 function trashDialog() {
-  const removed = games.filter((g) => g.deletedAt);
+  const removed = activeAndRemovedCatalogue();
   modal(
     `<h2>Recently removed games</h2><p>Games and their complete journals stay here until you restore them. They are included in full backups.</p><div id="dialog-error" role="alert" hidden></div><div class="lookup-results">${removed.map((g) => `<button data-restore-game="${e(g.id)}">Restore ${e(g.title)} · ${e(g.platform)}</button>`).join("") || "<p>No removed games.</p>"}</div><button id="trash-back">Back to settings</button>`,
   );
@@ -241,11 +305,20 @@ function trashDialog() {
         b.disabled = true;
         try {
           const g = games.find((g) => g.id === b.dataset.restoreGame);
-          if (activeGames().some((x) => key(x) === key(g)))
+          if (
+            activeGames().some((x) => titleKey(x.title) === titleKey(g.title))
+          )
             throw Error(
               "An active copy already exists. Edit that copy before restoring this game.",
             );
-          await saveGame({ ...g, deletedAt: null });
+          await saveGame(
+            {
+              ...g,
+              deletedAt: null,
+              copies: g.copies.map((c) => ({ ...c, deletedAt: null })),
+            },
+            { replaceCopies: true },
+          );
           trashDialog();
         } catch (err) {
           inlineError(err.message);
@@ -254,76 +327,114 @@ function trashDialog() {
       }),
   );
 }
-async function saveImportChunk(items, fill) {
-  const uid = user?.uid || null;
-  let saved = [];
-  if (user && cloud) {
-    await cloud.runTransaction(cloud.db, async (tx) => {
-      const refs = items.map((g) =>
-        cloud.doc(cloud.db, "users", uid, "games", g.id),
-      );
-      const snaps = await Promise.all(refs.map((ref) => tx.get(ref)));
-      saved = items.map((g, i) =>
-        snaps[i].exists()
-          ? fill
-            ? mergeMissingDetails(snaps[i].data(), g)
-            : { ...snaps[i].data(), id: g.id }
-          : g,
-      );
-      saved.forEach((g, i) => tx.set(refs[i], { ...g, updatedAt: Date.now() }));
-    });
-  } else saved = items;
-  if ((user?.uid || null) !== uid)
-    throw Error("Your account changed. Reopen the library before retrying.");
-  for (const g of saved) {
-    const i = games.findIndex((x) => x.id === g.id);
-    if (i < 0) games.push(g);
-    else games[i] = g;
+async function saveImportChunk(items, fill, options = {}) {
+  const catIds = items.map(
+    (g) =>
+      library.catalogue.find((c) => titleKey(c.title) === titleKey(g.title))
+        ?.id || catalogueId(g.title),
+  );
+  const runIds = items
+    .filter(
+      (g) =>
+        g.history?.length ||
+        g.percent > 0 ||
+        ["playing", "paused", "completed"].includes(g.status),
+    )
+    .map((g) => "run-" + g.id);
+  await commitLibrary(
+    catIds,
+    runIds,
+    (state) => migrateLegacy(state, items),
+    options,
+  );
+}
+async function importLibraryModels(incoming, options = {}) {
+  for (let offset = 0; offset < incoming.catalogue.length; offset += 25) {
+    const catalogue = incoming.catalogue.slice(offset, offset + 25);
+    const ids = catalogue.map((c) => c.id);
+    const batch = {
+      ...incoming,
+      catalogue,
+      playthroughs: incoming.playthroughs.filter((p) =>
+        ids.includes(p.catalogueId),
+      ),
+    };
+    const runs = [
+      ...batch.playthroughs.map((p) => p.id),
+      ...catalogue.flatMap((c) =>
+        (c.completedPlaythroughs || []).map((p) => p.id),
+      ),
+    ];
+    await commitLibrary(
+      ids,
+      runs,
+      (state) => mergeLibraries(state, batch),
+      options,
+    );
   }
-  if (!user) localStorage.setItem(localKey, JSON.stringify(games));
 }
 async function continueStoryAfterSignIn(g, tab = "story") {
-  const existing = activeGames().find((x) => key(x) === key(g));
-  const open = (id) => {
-    detail(id, "", tab);
-  };
+  const id = g.id;
+  const current = games.find((x) => x.id === id);
   if (
-    existing &&
-    g.history.every((h) => existing.history.some((x) => x.id === h.id))
+    current &&
+    (g.history || []).every((h) =>
+      current.history?.some((saved) => saved.id === h.id),
+    )
   ) {
-    open(existing.id);
+    detail(id, "", tab);
     return;
   }
+  const cat =
+    g.recordType === "playthrough"
+      ? makeCatalogue({ ...g, id: g.catalogueId, recordType: "catalogue" })
+      : makeCatalogue(g);
   modal(
-    `<h2>Sync this game to continue</h2><p>${e(g.title)} is saved on this device. Sync its journal to your Google library, then continue where you left off. Existing cloud story entries are preserved.</p><div id="dialog-error" role="alert" hidden></div><button id="sync-story" class="primary">Sync game & continue</button>`,
+    `<h2>Sync this game to continue</h2><p>Sync ${e(g.title)} and its saved playthrough to your Google library. Existing journals are preserved.</p><div id="dialog-error" role="alert" hidden></div><button id="sync-story" class="primary">Sync & continue</button>`,
   );
   $("#sync-story").onclick = async (ev) => {
     ev.target.disabled = true;
     try {
-      const merged = existing
-        ? {
-            ...existing,
-            history: [
-              ...existing.history,
-              ...g.history.filter(
-                (h) => !existing.history.some((x) => x.id === h.id),
-              ),
-            ].sort((a, b) => a.date.localeCompare(b.date)),
-          }
-        : g;
-      const latest = merged.history.at(-1);
-      if (latest) {
-        merged.percent = latest.percent;
-        merged.status = latest.percent === 100 ? "completed" : "playing";
+      const incoming = {
+        ...emptyLibrary(),
+        catalogue: [cat],
+        playthroughs:
+          g.recordType === "playthrough" && g.status !== "completed"
+            ? [playthroughRecord(g)]
+            : [],
+      };
+      if (g.status === "completed" && g.recordType === "playthrough") {
+        incoming.catalogue[0].completedPlaythroughs = [playthroughRecord(g)];
+        incoming.catalogue[0].completed = true;
       }
-      await saveGame(merged);
-      open(merged.id);
+      await importLibraryModels(incoming);
+      detail(id, "", tab);
     } catch (err) {
       inlineError(err.message);
       ev.target.disabled = false;
     }
   };
 }
+async function migrateDeviceDialog() {
+  const incoming = readDeviceLibrary();
+  modal(
+    `<h2>Sync this device’s catalogue</h2><p>${incoming.catalogue.length} catalogue games and ${incoming.playthroughs.length} active playthroughs will be merged into your account. Completed journals are preserved.</p><div id="dialog-error" role="alert" hidden></div><button id="sync-device" class="primary">Sync catalogue & playthroughs</button>`,
+  );
+  $("#sync-device").onclick = async (ev) => {
+    ev.target.disabled = true;
+    try {
+      await importLibraryModels(incoming);
+      migrationDismissed = true;
+      $("#modal").close();
+      render();
+      toast("Catalogue and playthroughs synced.");
+    } catch (err) {
+      inlineError(err.message);
+      ev.target.disabled = false;
+    }
+  };
+}
+
 function finishSignIn() {
   if (user && authContinuation && syncStatus === "synced") {
     const next = authContinuation;
@@ -338,19 +449,41 @@ function filtered() {
       (g) =>
         (view === "progress"
           ? g.collection === "owned" && ["playing", "paused"].includes(g.status)
-          : g.collection === view) &&
+          : view === "wishlist"
+            ? g.copies.some((c) => c.collection === "wishlist" && !c.deletedAt)
+            : g.collection === view) &&
         (!$("#search").value ||
           [g.title, g.developer, g.genre, g.edition]
             .join(" ")
             .toLowerCase()
             .includes($("#search").value.toLowerCase())) &&
-        (!$("#platform").value || g.platform === $("#platform").value) &&
+        (!$("#platform").value ||
+          (g.recordType === "playthrough"
+            ? g.platform === $("#platform").value
+            : g.copies.some(
+                (c) =>
+                  !c.deletedAt &&
+                  c.platform === $("#platform").value &&
+                  (view === "wishlist"
+                    ? c.collection === "wishlist"
+                    : c.collection === "owned"),
+              ))) &&
         (!$("#genre").value ||
           g.genre
             .split(",")
             .map((x) => x.trim())
             .includes($("#genre").value)) &&
-        (!$("#status").value || g.status === $("#status").value) &&
+        (!$("#status").value ||
+          (g.recordType === "playthrough"
+            ? g.status === $("#status").value
+            : g.completed
+              ? $("#status").value === "completed"
+              : $("#status").value === "not-started"
+                ? !activeRuns().some((p) => p.catalogueId === g.id)
+                : activeRuns().some(
+                    (p) =>
+                      p.catalogueId === g.id && p.status === $("#status").value,
+                  ))) &&
         (!$("#year").value ||
           (g.releaseDate || "").slice(0, 4) === $("#year").value),
     )
@@ -380,17 +513,19 @@ function options(id, values, label) {
   if ([...el.options].some((o) => o.value === selected)) el.value = selected;
 }
 function render() {
-  const library = displayedGames();
+  const library = catalogueGames();
   const owned = library.filter((g) => g.collection === "owned"),
-    playing = owned.filter((g) => ["playing", "paused"].includes(g.status)),
-    wish = library.filter((g) => g.collection === "wishlist"),
+    playing = activeRuns(),
+    wish = library.filter((g) =>
+      g.copies.some((c) => c.collection === "wishlist" && !c.deletedAt),
+    ),
     complete = owned.filter((g) => g.status === "completed");
   $("#owned-count").textContent = owned.length;
   $("#wish-count").textContent = wish.length;
   $("#progress-count").textContent = playing.length;
   $("#page-title").innerHTML =
     {
-      owned: "Your library",
+      owned: "Your catalogue",
       wishlist: "Your wishlist",
       progress: "Your adventures",
     }[view] + "<span>.</span>";
@@ -419,7 +554,13 @@ function render() {
       : "";
   options(
     "#platform",
-    library.map((g) => g.platform),
+    [
+      ...new Set(
+        library.flatMap((g) =>
+          g.copies.filter((c) => !c.deletedAt).map((c) => c.platform),
+        ),
+      ),
+    ],
     "All platforms",
   );
   options(
@@ -438,11 +579,14 @@ function render() {
       : view === "wishlist"
         ? "Want to play"
         : "All games";
-  const hasCollection = library.some((g) =>
+  const hasCollection =
     view === "progress"
-      ? g.collection === "owned" && ["playing", "paused"].includes(g.status)
-      : g.collection === view,
-  );
+      ? activeRuns().length > 0
+      : library.some((g) =>
+          view === "wishlist"
+            ? g.copies.some((c) => c.collection === "wishlist" && !c.deletedAt)
+            : g.collection === view,
+        );
   const list = filtered();
   $("#results-count").textContent =
     `${list.length} game${list.length !== 1 ? "s" : ""}`;
@@ -450,10 +594,10 @@ function render() {
     ? list
         .map(
           (g, i) =>
-            `<button class="game-card" data-game="${e(g.id)}"><div class="cover" style="--c1:${["#65663b", "#486a61", "#75624c", "#625778", "#3e6380", "#804f48"][[...g.title].reduce((n, c) => n + c.charCodeAt(0), 0) % 6]}">${g.cover && /^https:\/\//.test(g.cover) ? `<img src="${e(g.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="cover-title">${e(g.title)}</span>`}<span class="pill">${e(g.platform)}</span></div><div class="card-info"><h3>${e(g.title)}</h3><p class="card-platform">${e(g.platform)}</p>${g.edition ? `<p class="card-edition">${e(g.edition)}</p>` : ""}<p>${e(g.genre)}${g.releaseDate ? " · " + e((g.releaseDate || "").slice(0, 4)) : ""}</p><div class="progress-row"><span>${g.collection === "wishlist" ? "On your wishlist" : labels[g.status]}</span><span>${g.collection === "owned" ? percentLabel(g) : ""}</span></div>${g.collection === "owned" ? `<progress max="100" value="${g.percent}" aria-label="Main story progress"></progress>` : ""}</div></button>`,
+            `<button class="game-card" data-game="${e(g.id)}"><div class="cover" style="--c1:${["#65663b", "#486a61", "#75624c", "#625778", "#3e6380", "#804f48"][[...g.title].reduce((n, c) => n + c.charCodeAt(0), 0) % 6]}">${g.cover && /^https:\/\//.test(g.cover) ? `<img src="${e(g.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="cover-title">${e(g.title)}</span>`}<span class="pill">${e(g.platform)}</span></div><div class="card-info"><h3>${e(g.title)}</h3><p class="card-platform">${e(g.platform)}</p>${g.edition ? `<p class="card-edition">${e(g.edition)}</p>` : ""}<p>${e(g.genre)}${g.releaseDate ? " · " + e((g.releaseDate || "").slice(0, 4)) : ""}</p><div class="progress-row"><span>${view === "progress" ? labels[g.status] : g.completed ? "Main story completed ✓" : view === "wishlist" ? "On your wishlist" : activeRuns().some((p) => p.catalogueId === g.id) ? "Currently playing" : "In catalogue"}</span><span>${view === "progress" ? percentLabel(g) : ""}</span></div>${view === "progress" ? `<progress max="100" value="${g.percent}" aria-label="Main story progress"></progress>` : ""}</div></button>`,
         )
         .join("")
-    : `<div class="empty"><div class="eyebrow">${hasCollection ? "YOUR COLLECTION" : "A NEW SAVE FILE"}</div><h2>${hasCollection ? "No games match your filters." : view === "wishlist" ? "Your wishlist starts here." : view === "progress" ? "No stories in progress yet." : "Your adventures belong here."}</h2><p>${hasCollection ? "Clear your filters to see your collection." : view === "wishlist" ? "Find a game and save it for your next adventure." : view === "progress" ? "Open a game in your library and record where you left off." : "Import your CLZ collection or add your first game."}</p>${hasCollection ? '<button id="empty-clear">Clear filters</button>' : view === "progress" ? '<button id="empty-library">Browse library</button>' : demoGames ? "" : view === "wishlist" ? '<button id="empty-add" class="primary">Add to wishlist</button>' : '<button class="primary" id="empty-import">Import CLZ CSV</button><button id="demo">Explore a sample library</button>'}</div>`;
+    : `<div class="empty"><div class="eyebrow">${hasCollection ? "YOUR COLLECTION" : "A NEW SAVE FILE"}</div><h2>${hasCollection ? "No games match your filters." : view === "wishlist" ? "Your wishlist starts here." : view === "progress" ? "No stories in progress yet." : "Your adventures belong here."}</h2><p>${hasCollection ? "Clear your filters to see your collection." : view === "wishlist" ? "Find a game and save it for your next adventure." : view === "progress" ? "Open a catalogue game and choose Start a playthrough." : "Import your CLZ collection or add your first game."}</p>${hasCollection ? '<button id="empty-clear">Clear filters</button>' : view === "progress" ? '<button id="empty-library">Browse catalogue</button>' : demoGames ? "" : view === "wishlist" ? '<button id="empty-add" class="primary">Add to wishlist</button>' : '<button class="primary" id="empty-import">Import CLZ CSV</button><button id="demo">Explore a sample library</button>'}</div>`;
   document
     .querySelectorAll("[data-game]")
     .forEach((b) => (b.onclick = () => detail(b.dataset.game, "", "story")));
@@ -506,14 +650,13 @@ function render() {
         : "";
   $("#exit-demo")?.addEventListener("click", () => {
     demoGames = null;
+    demoLibrary = null;
     clearFilters();
   });
   $("#retry-sync")?.addEventListener("click", () =>
     user ? subscribeLibrary() : initCloud(),
   );
-  $("#review-local")?.addEventListener("click", () =>
-    reviewImport(readLocal(), settings, true),
-  );
+  $("#review-local")?.addEventListener("click", () => migrateDeviceDialog());
   $("#dismiss-migration")?.addEventListener("click", () => {
     migrationDismissed = true;
     render();
@@ -582,6 +725,118 @@ $("#filter-toggle").onclick = () => {
   const open = $("#filter-panel").classList.toggle("is-open");
   $("#filter-toggle").setAttribute("aria-expanded", String(open));
 };
+function catalogueDetail(g) {
+  const state = currentLibrary(),
+    runs = state.playthroughs.filter((p) => p.catalogueId === g.id),
+    archives = g.completedPlaythroughs || [],
+    owned = g.copies.filter((c) => c.collection === "owned" && !c.deletedAt);
+  const version = modal(
+    `<div class="catalogue-detail"><div class="eyebrow">GAME CATALOGUE</div><h2>${e(g.title)}</h2><div class="detail-meta"><span class="badge">${e(g.genre)}</span>${g.completed ? '<span class="badge">Main story completed ✓</span>' : ""}</div><h3>Your platforms</h3><ul class="ownership-list">${g.copies.map((c) => `<li><strong>${e(c.platform)}</strong>${c.edition ? ` · ${e(c.edition)}` : ""}<span class="badge">${c.deletedAt ? "Removed copy" : c.collection === "owned" ? "Owned" : "Wishlist"}</span>${c.releaseDate ? `<small class="muted">Released ${e(c.releaseDate)}</small>` : ""}</li>`).join("")}</ul><p class="muted">Ownership lives here. Each playthrough keeps its own stopping point and story journal.</p>${!demoGames && owned.length ? '<button id="start-playthrough" class="primary">Start a playthrough</button>' : ""}<h3>Currently playing</h3><div class="lookup-results">${runs.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>${labels[p.status]} · ${p.percent}% main story</span><span class="muted">${e(p.history.at(-1)?.label || "Ready to begin")}</span></button>`).join("") || '<p class="muted">No active playthroughs.</p>'}</div><h3>Completed stories</h3><div class="lookup-results">${archives.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>Main story completed · Read recap & journal</span><small class="muted">${e(p.completedAt ? new Date(p.completedAt).toLocaleDateString() : p.history.at(-1)?.date || "")}</small></button>`).join("") || '<p class="muted">No completed playthroughs yet.</p>'}</div>${demoGames ? '<p class="muted">Read-only sample catalogue.</p>' : '<div class="detail-actions"><button id="edit-catalogue">Edit details & platforms</button><button id="catalogue-rawg">Find missing details</button><button id="remove-catalogue" class="quiet">Remove catalogue game</button></div>'}<div id="dialog-error" role="alert" hidden></div></div>`,
+  );
+  document
+    .querySelectorAll("[data-playthrough]")
+    .forEach(
+      (b) => (b.onclick = () => detail(b.dataset.playthrough, "", "story")),
+    );
+  $("#start-playthrough")?.addEventListener("click", () =>
+    startPlaythroughDialog(g),
+  );
+  $("#edit-catalogue")?.addEventListener("click", () => addDialog(g));
+  $("#catalogue-rawg")?.addEventListener("click", () => lookupGame(g));
+  $("#remove-catalogue")?.addEventListener("click", () => {
+    modal(
+      `<h2>Remove ${e(g.title)}?</h2><p>This moves the catalogue game, its owned platforms and all playthrough journals to Recently removed. You can restore them in Settings.</p><div id="dialog-error" role="alert" hidden></div><button id="remove-confirm">Move to recently removed</button><button id="remove-back">Back to catalogue</button>`,
+    );
+    $("#remove-back").onclick = () => detail(g.id);
+    $("#remove-confirm").onclick = async (ev) => {
+      ev.target.disabled = true;
+      try {
+        await removeGame(g.id);
+        $("#modal").close();
+      } catch (err) {
+        inlineError(err.message);
+        ev.target.disabled = false;
+      }
+    };
+  });
+}
+function startPlaythroughDialog(g) {
+  const copies = g.copies.filter(
+    (c) => c.collection === "owned" && !c.deletedAt,
+  );
+  modal(
+    `<h2>Start ${e(g.title)}</h2><p>Choose the copy you’ll play. Starting again keeps your previous journals and catalogue completion mark.</p><form id="start-playthrough-form"><label>Owned platform<select name="copy">${copies.map((c, i) => `<option value="${i}">${e(c.platform)}${c.edition ? " · " + e(c.edition) : ""}</option>`).join("")}</select></label><label>Edition / route (optional)<input name="route" maxlength="200" placeholder="Use the owned edition, or specify your story route"></label><div id="dialog-error" role="alert" hidden></div><button class="primary">Start playthrough</button></form><button id="start-back">Back to catalogue</button>`,
+  );
+  $("#start-back").onclick = () => detail(g.id);
+  $("#start-playthrough-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const data = new FormData(ev.target),
+      copy = copies[Number(data.get("copy"))],
+      button = ev.target.querySelector("button");
+    button.disabled = true;
+    try {
+      if (!copy) throw Error("Choose an owned platform.");
+      const p = playthroughRecord({
+        id: crypto.randomUUID(),
+        catalogueId: g.id,
+        platform: copy.platform,
+        edition: data.get("route").trim() || copy.edition,
+        status: "playing",
+        percent: 0,
+        history: [],
+        milestones: [],
+        updatedAt: Date.now(),
+      });
+      await saveGame(p);
+      detail(p.id, "", "update");
+      toast("Playthrough started. Your catalogue ownership is unchanged.");
+    } catch (err) {
+      inlineError(err.message);
+      button.disabled = false;
+    }
+  };
+}
+function restoreModelsDialog(data) {
+  validateLibrary(data);
+  modal(
+    `<h2>Restore catalogue backup</h2><p>${data.catalogue.length} games and ${data.playthroughs.length} active playthroughs. Platforms and journals will be merged; completed histories are preserved.</p><div id="dialog-error" role="alert" hidden></div><button id="restore-models" class="primary">Merge this backup</button>`,
+  );
+  $("#restore-models").onclick = async (ev) => {
+    ev.target.disabled = true;
+    try {
+      await importLibraryModels(data);
+      $("#modal").close();
+      toast("Catalogue backup merged.");
+    } catch (err) {
+      inlineError(err.message);
+      ev.target.disabled = false;
+    }
+  };
+}
+
+function parseCopies(text, previous = []) {
+  return text
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [platform, edition = "", collection = "owned"] = line
+        .split("|")
+        .map((s) => s.trim());
+      if (!platform || !["owned", "wishlist"].includes(collection))
+        throw Error("Use platform | edition | owned or wishlist on each line.");
+      const old = previous.find(
+        (c) =>
+          c.platform === normalizePlatform(platform) && c.edition === edition,
+      );
+      return {
+        ...old,
+        platform: normalizePlatform(platform),
+        edition,
+        collection,
+        releaseDate: old?.releaseDate || "",
+      };
+    });
+}
 function addDialog(original) {
   const g = original || {
     title: "",
@@ -595,7 +850,7 @@ function addDialog(original) {
     milestones: [],
   };
   modal(
-    `<h2>${original?.id ? "Edit game" : "Add a game"}</h2><button id="lookup-game">⌕ Find details on RAWG</button><p class="muted">Search to fill missing details. Your existing fields and progress are preserved.</p><form id="game-form"><label>Title<input name="title" required maxlength="200" value="${e(g.title)}"></label><div class="form-row"><label>Platform<input name="platform" required list="platforms" value="${e(g.platform)}"><datalist id="platforms"><option>PC / Steam</option><option>PlayStation 5</option><option>PlayStation 4</option><option>Nintendo Switch</option><option>Nintendo Switch 2</option></datalist></label><label>Genre<input name="genre" value="${e(g.genre)}" placeholder="Action RPG"></label></div><div class="form-row"><label>Release date<input name="releaseDate" placeholder="YYYY or YYYY-MM-DD" pattern="[0-9]{4}(-[0-9]{2}-[0-9]{2})?" value="${e(g.releaseDate)}"></label><label>Developer<input name="developer" value="${e(g.developer)}"></label></div><div class="form-row"><label>Edition / route<input name="edition" value="${e(g.edition)}" placeholder="Standard edition"></label><label>Collection<select name="collection"><option value="owned" ${g.collection === "owned" ? "selected" : ""}>Owned</option><option value="wishlist" ${g.collection === "wishlist" ? "selected" : ""}>Wishlist</option></select></label></div><details><summary>Custom cover image</summary><label>Cover image URL<input name="cover" type="url" value="${e(g.cover)}" placeholder="https://…"></label></details><div id="dialog-error" role="alert" hidden></div><button class="primary">Save game</button></form>`,
+    `<h2>${original?.id ? "Edit game" : "Add a game"}</h2><button id="lookup-game">⌕ Find details on RAWG</button><p class="muted">Search to fill missing details. Your existing fields and progress are preserved.</p><form id="game-form"><label>Title<input name="title" required maxlength="200" value="${e(g.title)}"></label><div class="form-row">${g.recordType === "catalogue" ? `<label>Platforms and editions<textarea name="copiesText" required rows="4" placeholder="PC / Steam | Standard | owned">${e(g.copiesText || g.copies.map((c) => `${c.platform} | ${c.edition} | ${c.collection}`).join("\n"))}</textarea><span class="muted">One copy per line: platform | edition | owned or wishlist. Progress is stored in playthroughs.</span></label>` : `<label>Platform<input name="platform" required list="platforms" value="${e(g.platform)}"><datalist id="platforms"><option>PC / Steam</option><option>PlayStation 5</option><option>PlayStation 4</option><option>Nintendo Switch</option><option>Nintendo Switch 2</option></datalist></label>`}<label>Genre<input name="genre" value="${e(g.genre)}" placeholder="Action RPG"></label></div><div class="form-row"><label>Release date<input name="releaseDate" placeholder="YYYY or YYYY-MM-DD" pattern="[0-9]{4}(-[0-9]{2}-[0-9]{2})?" value="${e(g.releaseDate)}"></label><label>Developer<input name="developer" value="${e(g.developer)}"></label></div>${g.recordType === "catalogue" ? "" : `<div class="form-row"><label>Edition / route<input name="edition" value="${e(g.edition)}" placeholder="Standard edition"></label><label>Collection<select name="collection"><option value="owned" ${g.collection === "owned" ? "selected" : ""}>Owned</option><option value="wishlist" ${g.collection === "wishlist" ? "selected" : ""}>Wishlist</option></select></label></div>`}<details><summary>Custom cover image</summary><label>Cover image URL<input name="cover" type="url" value="${e(g.cover)}" placeholder="https://…"></label></details><div id="dialog-error" role="alert" hidden></div><button class="primary">Save game</button></form>`,
   );
   $("#lookup-game").onclick = () => {
     const values = Object.fromEntries(new FormData($("#game-form")));
@@ -612,27 +867,35 @@ function addDialog(original) {
     btn.textContent = "Saving…";
     try {
       const values = Object.fromEntries(new FormData(ev.target));
-      values.platform = normalizePlatform(values.platform);
+      if (g.recordType === "catalogue") {
+        values.copies = parseCopies(values.copiesText, g.copies);
+        delete values.copiesText;
+      } else values.platform = normalizePlatform(values.platform);
       values.releaseDate = normalizeReleaseDate(values.releaseDate);
       if (
-        games.some((x) => x.id !== g.id && key(x) === key({ ...g, ...values }))
+        activeGames().some(
+          (x) => x.id !== g.id && titleKey(x.title) === titleKey(values.title),
+        )
       )
         throw Error(
-          "This game, platform and edition are already in your library.",
+          "This game is already in your catalogue. Open it to add another owned platform.",
         );
       if (!validReleaseDate(values.releaseDate))
         throw Error("Enter a valid date as YYYY or YYYY-MM-DD.");
       if (values.cover && !values.cover.startsWith("https://"))
         throw Error("Use an HTTPS cover URL.");
-      await saveGame({
-        ...g,
-        ...values,
-        id: g.id || crypto.randomUUID(),
-        genre: values.genre || "Unsorted",
-        history: g.history || [],
-        status: g.status || "not-started",
-        percent: g.percent || 0,
-      });
+      await saveGame(
+        {
+          ...g,
+          ...values,
+          id: g.id || crypto.randomUUID(),
+          genre: values.genre || "Unsorted",
+          history: g.history || [],
+          status: g.status || "not-started",
+          percent: g.percent || 0,
+        },
+        { replaceCopies: g.recordType === "catalogue" },
+      );
       if (isCurrent(version)) {
         if (metadataQueueActive) metadataQueue();
         else $("#modal").close();
@@ -712,8 +975,10 @@ async function bulkMetadata(queue) {
       const matches = results.filter(
         (m) =>
           titleKey(m.title) === titleKey(g.title) &&
-          m.platforms.some(
-            (p) => normalizePlatform(p.name) === normalizePlatform(g.platform),
+          m.platforms.some((p) =>
+            g.copies
+              ? g.copies.some((c) => normalizePlatform(p.name) === c.platform)
+              : normalizePlatform(p.name) === normalizePlatform(g.platform),
           ),
       );
       if (matches.length !== 1) {
@@ -725,8 +990,10 @@ async function bulkMetadata(queue) {
         unmatched.push(g);
         continue;
       }
-      const platform = m.platforms.find(
-        (p) => normalizePlatform(p.name) === normalizePlatform(g.platform),
+      const platform = m.platforms.find((p) =>
+        g.copies
+          ? g.copies.some((c) => normalizePlatform(p.name) === c.platform)
+          : normalizePlatform(p.name) === normalizePlatform(g.platform),
       );
       if (!platform) {
         unmatched.push(g);
@@ -820,18 +1087,27 @@ function refreshRecap(id) {
   bindRecap(g);
 }
 function detail(id, draft = "", tab = detailTab) {
-  const g = displayedGames().find((x) => x.id === id);
+  const g = (demoLibrary ? projectLibrary(demoLibrary) : games).find(
+    (x) => x.id === id,
+  );
   if (!g) return;
-  draft = draft || progressDrafts[key(g)] || "";
+  if (g.recordType === "catalogue") {
+    catalogueDetail(g);
+    return;
+  }
+  draft =
+    draft ||
+    progressDrafts[g.recordType === "playthrough" ? g.id : key(g)] ||
+    "";
   detailTab = tab;
   modal(`<div id="game-detail" data-id="${e(id)}"><div class="eyebrow">${g.collection === "owned" ? "YOUR ADVENTURE" : "YOUR NEXT ADVENTURE"}</div><h2>${e(g.title)}</h2><div class="detail-meta"><span class="badge">${e(g.platform)}</span><span class="badge">${e(g.genre)}</span>${g.edition ? `<span class="badge">${e(g.edition)}</span>` : ""}</div>${
     g.collection === "owned"
       ? `
  <div class="detail-progress"><div class="progress-row"><span>${labels[g.status]}</span><strong>${percentLabel(g)} main story${g.history.at(-1)?.estimated ? " · estimated" : ""}</strong></div><progress value="${g.percent}" max="100" aria-label="Main story progress"></progress></div>
- <div class="dialog-tabs" role="tablist" aria-label="Game story"><button role="tab" id="tab-story" aria-controls="panel-story" aria-selected="${tab === "story"}" tabindex="${tab === "story" ? 0 : -1}" data-tab="story">Story so far</button><button role="tab" id="tab-update" aria-controls="panel-update" aria-selected="${tab === "update"}" tabindex="${tab === "update" ? 0 : -1}" data-tab="update">Update progress</button><button role="tab" id="tab-journal" aria-controls="panel-journal" aria-selected="${tab === "journal"}" tabindex="${tab === "journal" ? 0 : -1}" data-tab="journal">Journal</button></div>
+ <div class="dialog-tabs" role="tablist" aria-label="Game story"><button role="tab" id="tab-story" aria-controls="panel-story" aria-selected="${tab === "story"}" tabindex="${tab === "story" ? 0 : -1}" data-tab="story">Story so far</button><button role="tab" id="tab-update" aria-controls="panel-update" aria-selected="${tab === "update"}" tabindex="${tab === "update" ? 0 : -1}" data-tab="update">${g.status === "completed" ? "Completed playthrough" : "Update progress"}</button><button role="tab" id="tab-journal" aria-controls="panel-journal" aria-selected="${tab === "journal"}" tabindex="${tab === "journal" ? 0 : -1}" data-tab="journal">Journal</button></div>
  <div id="recap-status" aria-live="polite">${recapStatus(g)}</div>
  <section role="tabpanel" id="panel-story" aria-labelledby="tab-story" ${tab === "story" ? "" : "hidden"}><div id="recap-content">${recapContent(g)}</div>${!demoGames && g.history.at(-1)?.recap && user ? '<button id="regenerate-recap">Refresh full story recap</button>' : ""}</section>
- <section role="tabpanel" id="panel-update" aria-labelledby="tab-update" ${tab === "update" ? "" : "hidden"}>${demoGames ? "<p>This sample library is read-only. Exit demo to update your own games.</p>" : `${!user ? '<div class="notice"><p>Automatic chapter lookup and story recaps need Google sign-in. You can record a completed main story offline.</p><button id="progress-signin" type="button">Sign in with Google</button></div>' : ""}<form id="progress-form"><label>Where did you leave off?<textarea name="update" required maxlength="2000" placeholder="I just finished chapter 8…">${e(draft)}</textarea></label><p class="muted">Describe your last completed chapter, quest, or in-game date. The app calculates main-story progress.</p><div id="dialog-error" role="alert" hidden></div><button class="primary">Calculate progress</button></form><div class="detail-actions">${g.status !== "completed" ? `<button id="pause">${g.status === "paused" ? "Resume playing" : "Pause game"}</button>` : ""}</div><details class="advanced"><summary>Advanced story milestones</summary><p class="muted">Optional: use your own verified chapter list.</p><button id="milestones">Manage milestones</button></details>`}</section>
+ <section role="tabpanel" id="panel-update" aria-labelledby="tab-update" ${tab === "update" ? "" : "hidden"}>${g.status === "completed" ? "<p>This completed playthrough is archived in your catalogue. Start another playthrough from the catalogue to replay.</p>" : demoGames ? "<p>This sample library is read-only. Exit demo to update your own games.</p>" : `${!user ? '<div class="notice"><p>Automatic chapter lookup and story recaps need Google sign-in. You can record a completed main story offline.</p><button id="progress-signin" type="button">Sign in with Google</button></div>' : ""}<form id="progress-form"><label>Where did you leave off?<textarea name="update" required maxlength="2000" placeholder="I just finished chapter 8…">${e(draft)}</textarea></label><p class="muted">Describe your last completed chapter, quest, or in-game date. The app calculates main-story progress.</p><div id="dialog-error" role="alert" hidden></div><button class="primary">Calculate progress</button></form><div class="detail-actions">${g.status !== "completed" ? `<button id="pause">${g.status === "paused" ? "Resume playing" : "Pause game"}</button>` : ""}</div><details class="advanced"><summary>Advanced story milestones</summary><p class="muted">Optional: use your own verified chapter list.</p><button id="milestones">Manage milestones</button></details>`}</section>
  <section role="tabpanel" id="panel-journal" aria-labelledby="tab-journal" ${tab === "journal" ? "" : "hidden"}>${
    [...g.history]
      .reverse()
@@ -853,7 +1129,8 @@ function detail(id, draft = "", tab = detailTab) {
         ? "<p>Sample wishlist game.</p>"
         : '<p>Move this game to your library when you get it.</p><button id="move" class="primary">Move to library</button>'
   }
- ${demoGames ? "" : `<div class="detail-actions"><button id="edit">Edit details</button><button id="rawg-details">Find missing details</button><button id="delete" class="quiet">Delete game</button></div>`}</div>`);
+ <div class="detail-actions"><button id="back-catalogue">Back to catalogue</button></div></div>`);
+  $("#back-catalogue").onclick = () => detail(g.catalogueId);
   document.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => {
       detailTab = b.dataset.tab;
@@ -1273,7 +1550,7 @@ function reviewImport(
     `<h2>Review your import</h2><p>Review every game. Matches use title, platform and edition. Existing progress and recaps are preserved.</p>${defaultCollection ? '<label>Collection status was not included. Import these games into<select id="import-collection"><option value="owned">Library (owned)</option><option value="wishlist">Wishlist</option></select></label><p class="muted">You can change individual rows below.</p>' : ""}<label>Search preview<input id="import-search" type="search" placeholder="Title, platform or edition"></label><label>When a game already exists<select id="duplicate-policy"><option value="skip">Skip duplicate games</option><option value="fill">Fill missing details only</option></select></label><p id="import-summary" role="status" aria-live="polite"></p><div id="import-validation" class="notice" role="alert" hidden></div><label class="review-filter"><input id="import-needs-review" type="checkbox"> Show only rows needing correction</label><div id="import-preview" class="import-preview"></div><div class="detail-actions"><button id="preview-prev">Previous 25</button><span id="preview-page" role="status"></span><button id="preview-next">Next 25</button></div><div id="import-progress" role="status" aria-live="polite" hidden></div><progress id="import-meter" max="1" value="0" aria-label="Import progress" hidden></progress><button id="pause-import" hidden>Pause after this batch</button><div id="dialog-error" role="alert" hidden></div><div class="sticky-actions"><button id="confirm-import" class="primary">Import games</button><button id="import-back">Back</button></div>`,
   );
   const refresh = () => {
-    const plan = planImport(activeGames(), incoming),
+    const plan = planImport(existingImportCopies(), incoming),
       fill = $("#duplicate-policy").value === "fill",
       newCount = plan.filter((p) => p.action === "add").length,
       invalid = incoming.filter(
@@ -1315,7 +1592,7 @@ function reviewImport(
         (el) => el.dataset.previewRow,
       ),
     );
-    const plan = planImport(activeGames(), incoming),
+    const plan = planImport(existingImportCopies(), incoming),
       q = $("#import-search").value.toLowerCase(),
       invalid = incoming.filter(
         (g) => !g.title.trim() || !validReleaseDate(g.releaseDate),
@@ -1442,7 +1719,7 @@ function reviewImport(
       status.textContent = "Pausing after this batch…";
     };
     try {
-      const work = buildImportWork(activeGames(), incoming, fill);
+      const work = buildImportWork(existingImportCopies(), incoming, fill);
       meter.max = Math.max(1, work.length);
       meter.value = 0;
       for (let i = 0; i < work.length; i += 25) {
@@ -1547,10 +1824,8 @@ $("#export-btn").onclick = () => {
       "Developer",
       "Edition",
       "Collection",
-      "Status",
-      "Progress",
     ],
-    ...activeGames().map((g) => [
+    ...existingImportCopies().map((g) => [
       g.title,
       g.platform,
       g.genre,
@@ -1558,8 +1833,6 @@ $("#export-btn").onclick = () => {
       g.developer,
       g.edition,
       g.collection,
-      g.status,
-      g.percent,
     ]),
   ]
     .map((row) => row.map(quote).join(","))
@@ -1584,12 +1857,10 @@ function settings() {
   );
   $("#trash").onclick = trashDialog;
   $("#settings-signin")?.addEventListener("click", () => signIn(settings));
-  $("#migrate")?.addEventListener("click", () =>
-    reviewImport(readLocal(), settings, true),
-  );
+  $("#migrate")?.addEventListener("click", () => migrateDeviceDialog());
   $("#backup").onclick = () =>
     download(
-      JSON.stringify({ version: 1, games }, null, 2),
+      JSON.stringify(library, null, 2),
       "questtracker-backup.json",
       "application/json",
     );
@@ -1601,6 +1872,10 @@ function settings() {
       const version = modalVersion;
       const data = JSON.parse(await file.text());
       if (!isCurrent(version)) return;
+      if (data.version === 2) {
+        restoreModelsDialog(data);
+        return;
+      }
       if (data.version !== 1 || !Array.isArray(data.games))
         throw Error("Invalid backup.");
       const valid = data.games.every(
@@ -1678,37 +1953,67 @@ async function api(route, body) {
 function subscribeLibrary() {
   if (!user || !cloud) return;
   unsubscribe?.();
-  const uid = user.uid;
+  const uid = user.uid,
+    stops = [],
+    ready = { catalogue: false, playthroughs: false };
+  let legacyReady = false,
+    failed = false;
+  library = emptyLibrary();
+  rebuildLibrary();
   setSync("loading");
-  $("#sync-state").textContent = "Loading your synced library…";
-  unsubscribe = cloud.onSnapshot(
-    cloud.collection(cloud.db, "users", uid, "games"),
-    { includeMetadataChanges: true },
-    (snap) => {
-      if (user?.uid !== uid) return;
-      games = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
-      syncStatus = snap.metadata.fromCache
-        ? "loading"
-        : snap.metadata.hasPendingWrites
-          ? "syncing"
-          : "synced";
+  const finish = () => {
+    if (failed || user?.uid !== uid) return;
+    if (ready.catalogue && ready.playthroughs && legacyReady) {
+      syncStatus = "synced";
       syncError = "";
-      $("#sync-state").textContent = snap.metadata.hasPendingWrites
-        ? "Syncing changes…"
-        : "Synced across devices";
+      $("#sync-state").textContent = "Synced across devices";
       if (!importBusy) render();
       finishSignIn();
-    },
-    (err) => {
-      if (user?.uid !== uid) return;
-      $("#sync-state").textContent = "Sync unavailable";
-      setSync(
-        "error",
-        "Your saved library could not be reached. " + err.message,
+    }
+  };
+  const fail = (err) => {
+    if (user?.uid !== uid) return;
+    failed = true;
+    setSync("error", "Catalogue sync needs attention. " + err.message);
+  };
+  for (const name of ["catalogue", "playthroughs"])
+    stops.push(
+      cloud.onSnapshot(
+        cloud.collection(cloud.db, "users", uid, name),
+        { includeMetadataChanges: true },
+        (snap) => {
+          if (user?.uid !== uid) return;
+          library[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+          rebuildLibrary();
+          ready[name] =
+            !snap.metadata.fromCache && !snap.metadata.hasPendingWrites;
+          finish();
+        },
+        fail,
+      ),
+    );
+  unsubscribe = () => stops.forEach((stop) => stop());
+  void (async () => {
+    try {
+      const snap = await cloud.getDocs(
+        cloud.collection(cloud.db, "users", uid, "games"),
       );
-    },
-  );
+      if (user?.uid !== uid) return;
+      const legacy = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      for (let i = 0; i < legacy.length; i += 25) {
+        if (user?.uid !== uid) return;
+        await saveImportChunk(legacy.slice(i, i + 25), false, {
+          allowLoading: true,
+        });
+      }
+      legacyReady = true;
+      finish();
+    } catch (err) {
+      fail(err);
+    }
+  })();
 }
+
 async function initCloud() {
   if (!config.firebase) return;
   try {
@@ -1730,16 +2035,19 @@ async function initCloud() {
         migrationDismissed = false;
         metadataBatchSeen.clear();
         demoGames = null;
+        demoLibrary = null;
         $("#modal").close();
       }
       $("#login").textContent = u
         ? "Sign out · " + (u.displayName || u.email)
         : "G · Sign in with Google";
       if (u) {
+        library = emptyLibrary();
         games = [];
         subscribeLibrary();
       } else {
-        games = readLocal();
+        library = readDeviceLibrary();
+        rebuildLibrary();
         syncStatus = "local";
         syncError = "";
         $("#sync-state").textContent = "Local library · this device only";
@@ -1894,6 +2202,15 @@ function loadDemo() {
     status: "not-started",
     history: [],
   });
+  demoGames.push({
+    ...demoGames.find((g) => g.title.includes("Baldur")),
+    id: "demo-second-platform",
+    platform: "PlayStation 5",
+    percent: 0,
+    status: "not-started",
+    history: [],
+  });
+  demoLibrary = migrateLegacy(emptyLibrary(), demoGames);
   clearFilters();
   $("#app-notice").scrollIntoView({ block: "start" });
   $("#exit-demo").focus({ preventScroll: true });
@@ -2008,7 +2325,8 @@ function reviewMetadata(draft, metadata, back = () => lookupGame(draft)) {
   const index = metadata.platforms.findIndex(
     (p) =>
       p.name.toLowerCase() === draft.platform?.toLowerCase() ||
-      (draft.platform === "PC / Steam" && p.name === "PC"),
+      (draft.platform === "PC / Steam" && p.name === "PC") ||
+      draft.copies?.some((c) => normalizePlatform(p.name) === c.platform),
   );
   if (index >= 0) sel.value = String(index);
   $("#rawg-review").onsubmit = (ev) => {

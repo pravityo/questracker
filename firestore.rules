@@ -24,5 +24,39 @@ service cloud.firestore {
         && request.resource.data.history is list
         && request.resource.data.milestones is list;
     }
+    match /users/{uid}/catalogue/{gameId} {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid)
+        && request.resource.data.id == gameId
+        && request.resource.data.recordType == 'catalogue'
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.genre is string
+        && request.resource.data.developer is string
+        && request.resource.data.releaseDate is string
+        && request.resource.data.cover is string
+        && request.resource.data.copies is list
+        && request.resource.data.copies.size() > 0
+        && request.resource.data.completed is bool
+        && request.resource.data.completedPlaythroughs is list
+        && request.resource.data.migratedLegacy is map;
+    }
+    match /users/{uid}/playthroughs/{playthroughId} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid)
+        && request.resource.data.id == playthroughId
+        && request.resource.data.recordType == 'playthrough'
+        && request.resource.data.catalogueId is string
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/catalogue/$(request.resource.data.catalogueId))
+        && request.resource.data.platform is string
+        && request.resource.data.edition is string
+        && request.resource.data.status in ['playing','paused']
+        && request.resource.data.percent is number
+        && request.resource.data.percent >= 0 && request.resource.data.percent < 100
+        && request.resource.data.history is list
+        && request.resource.data.milestones is list;
+    }
+
   }
 }

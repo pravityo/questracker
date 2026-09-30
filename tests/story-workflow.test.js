@@ -192,86 +192,10 @@ test("recap response after sign-out never writes into another library", async ()
   assert.equal(writes, 0);
   assert.equal(state.recapJobs.size, 0);
 });
-function persistenceHarness(remote) {
-  let written;
-  const state = {
-    demoGames: null,
-    user: { uid: "owner" },
-    syncStatus: "synced",
-    games: [structuredClone(game)],
-    Date,
-    Map,
-    Error,
-    $: () => ({ textContent: "" }),
-    setSync: () => {},
-    toast: () => {},
-    localStorage: { setItem() {} },
-    localKey: "test",
-    cloud: {
-      db: {},
-      doc: () => ({}),
-      runTransaction: async (db, run) =>
-        run({
-          get: async () => ({
-            exists: () => !!remote,
-            data: () => structuredClone(remote),
-          }),
-          set: (ref, g) => {
-            written = g;
-          },
-        }),
-    },
-  };
-  vm.runInNewContext(
-    handler("async function saveGame(", "async function removeGame("),
-    state,
-  );
-  return { state, written: () => written };
-}
-test("background recap sync preserves remote metadata and paused state", async () => {
-  const remote = {
-    ...structuredClone(game),
-    title: "Renamed remotely",
-    percent: 55,
-    status: "paused",
-  };
-  const { state, written } = persistenceHarness(remote);
-  await state.saveGame(
-    {
-      ...game,
-      title: "Old title",
-      history: game.history.map((h) => ({
-        ...h,
-        recap: "Updated recap",
-        recapUpdatedAt: Date.now(),
-      })),
-    },
-    { journalOnly: true },
-  );
-  assert.equal(written().title, "Renamed remotely");
-  assert.equal(written().status, "paused");
-  assert.equal(written().percent, 55);
-  assert.equal(written().history[0].recap, "Updated recap");
-});
-test("late background recap cannot recreate a deleted game", async () => {
-  const { state, written } = persistenceHarness(null);
-  await assert.rejects(
-    state.saveGame(structuredClone(game), { journalOnly: true }),
-    /deleted/,
-  );
-  assert.equal(written(), undefined);
-});
-
 test("an empty refreshed recap never erases an existing recap", async () => {
   const {state,run}=recapHarness(async()=>({recap:'',sources:[],warning:'Earlier story sources unavailable.'}));
   state.games[0].history[1].recap='Saved full recap';
   await run();
   assert.equal(state.games[0].history[1].recap,'Saved full recap');
   assert.equal(state.games[0].history[1].recapStatus,'error');
-});
-test("late recap cannot update a game moved to recently removed",async()=>{
-  const remote={...structuredClone(game),deletedAt:Date.now()};
-  const {state,written}=persistenceHarness(remote);
-  await assert.rejects(state.saveGame({...game},{journalOnly:true}),/deleted/);
-  assert.equal(written(),undefined);
 });
