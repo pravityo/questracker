@@ -100,3 +100,11 @@ Tests cover CLZ quoting, column mapping, platform-sensitive duplicates, safe HTM
 - [OpenAI Responses API](https://developers.openai.com/api/docs/quickstart)
 - [OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)
 - [Cloudflare Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+
+## RAWG metadata lookup
+
+Get a personal API key from https://rawg.io/apidocs (Free plan). In `backend/`, run `npx wrangler secret put RAWG_API_KEY` and enter the key at the hidden prompt. The key stays server-side. Redeploy with `npx wrangler deploy` after backend source updates.
+
+Add game → Find details on RAWG searches titles. Choose the correct edition, select its platform, and review the editable form before saving. Existing games have Find missing details; the library also has Fill missing details for selecting imported games that need enrichment. This is a per-game review workflow, not an unattended bulk match. Existing populated fields, ownership and journals are preserved; Unknown platforms and Unsorted genres count as missing. Multi-genre results are individually filterable. Descriptions are deliberately excluded from provider responses to avoid importing plot spoilers. RAWG release dates may be first-release dates when platform-specific dates are absent.
+
+RAWG requests require the verified Google owner and have a separate 100-request daily cap, independent of the AI quota. RAWG attribution is shown in the app and lookup dialogs. Search and detail selection each consume one provider request. Live RAWG access must be tested after adding the secret.
