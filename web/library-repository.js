@@ -30,14 +30,17 @@ export async function commitModels(
         .map((s) => s.data()),
     };
     result = transition(current);
+    let changed = false;
     cats.forEach((id, i) => {
       const next = result.catalogue.find((c) => c.id === id);
       if (
         next &&
         JSON.stringify(next) !==
           JSON.stringify(snapshots[i].exists() ? snapshots[i].data() : null)
-      )
-        tx.set(refs[i], next);
+      ) {
+        tx.set(refs[i], { ...next, syncUpdatedAt: cloud.serverTimestamp() });
+        changed = true;
+      }
     });
     runs.forEach((id, i) => {
       const next = result.playthroughs.find((p) => p.id === id),
@@ -48,10 +51,24 @@ export async function commitModels(
           JSON.stringify(
             snapshots[index].exists() ? snapshots[index].data() : null,
           )
-        )
-          tx.set(refs[index], next);
-      } else if (snapshots[index].exists()) tx.delete(refs[index]);
+        ) {
+          tx.set(refs[index], {
+            ...next,
+            syncUpdatedAt: cloud.serverTimestamp(),
+          });
+          changed = true;
+        }
+      } else if (snapshots[index].exists()) {
+        tx.delete(refs[index]);
+        changed = true;
+      }
     });
+    if (changed)
+      tx.set(
+        cloud.doc(cloud.db, "users", uid, "settings", "library"),
+        { updatedAt: cloud.serverTimestamp() },
+        { merge: true },
+      );
   });
   return { state: result, catalogueIds: cats, playthroughIds: runs };
 }

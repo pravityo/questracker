@@ -252,6 +252,7 @@ test("cloud completion reads all documents first and archives/deletes in one tra
   ]);
   const cloud = {
     db: {},
+    serverTimestamp: () => "server-time",
     doc: (_db, _users, _uid, type, id) => type + "/" + id,
     runTransaction: async (_db, fn) =>
       fn({
@@ -280,7 +281,7 @@ test("cloud completion reads all documents first and archives/deletes in one tra
       history: [...run.history, entry("end", 100, "2026-03-01")],
     }),
   );
-  assert.deepEqual(events, ["read", "read", "set", "delete"]);
+  assert.deepEqual(events, ["read", "read", "set", "delete", "set"]);
   assert.equal(documents.get("catalogue/" + cat.id).completed, true);
   assert.ok(!documents.has("playthroughs/" + run.id));
   assert.equal(applyCommitted(state, result).playthroughs.length, 0);

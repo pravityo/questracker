@@ -1,3 +1,4 @@
+import { syncDue, pullLibraryChanges } from "./cloud-sync.js";
 import {
   emptyLibrary,
   catalogueId,
@@ -45,6 +46,10 @@ const libraryKey = "questtracker.library.v2";
 let library = readDeviceLibrary();
 let games = projectLibrary(library);
 let demoLibrary = null;
+let visibleLimit = 24,
+  pageFingerprint = "";
+let syncGeneration = 0,
+  syncCache = null;
 let toastTimer,
   modalVersion = 0,
   returnFocus = null,
@@ -240,6 +245,7 @@ async function commitLibrary(
       if (user?.uid !== uid)
         throw Error("Your account changed. Reopen the library.");
       library = applyCommitted(library, committed);
+      writeSyncCache(uid);
     } else {
       library = transition(library);
       persistDevice();
@@ -587,11 +593,29 @@ function render() {
             ? g.copies.some((c) => c.collection === "wishlist" && !c.deletedAt)
             : g.collection === view,
         );
+  const fingerprint = JSON.stringify([
+    view,
+    ...["search", "platform", "genre", "status", "year", "sort"].map(
+      (id) => $("#" + id).value,
+    ),
+  ]);
+  if (fingerprint !== pageFingerprint) {
+    visibleLimit = 24;
+    pageFingerprint = fingerprint;
+  }
   const list = filtered();
+  $("#load-more").hidden = list.length <= visibleLimit;
+  $("#load-more").textContent =
+    `Load next ${Math.min(24, list.length - visibleLimit)} games`;
+  $("#load-more").onclick = () => {
+    visibleLimit += 24;
+    render();
+  };
   $("#results-count").textContent =
     `${list.length} game${list.length !== 1 ? "s" : ""}`;
   $("#games").innerHTML = list.length
     ? list
+        .slice(0, visibleLimit)
         .map(
           (g, i) =>
             `<button class="game-card" data-game="${e(g.id)}"><div class="cover" style="--c1:${["#65663b", "#486a61", "#75624c", "#625778", "#3e6380", "#804f48"][[...g.title].reduce((n, c) => n + c.charCodeAt(0), 0) % 6]}">${g.cover && /^https:\/\//.test(g.cover) ? `<img src="${e(g.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="cover-title">${e(g.title)}</span>`}<span class="pill">${e(g.platform)}</span></div><div class="card-info"><h3>${e(g.title)}</h3><p class="card-platform">${e(g.platform)}</p>${g.edition ? `<p class="card-edition">${e(g.edition)}</p>` : ""}<p>${e(g.genre)}${g.releaseDate ? " · " + e((g.releaseDate || "").slice(0, 4)) : ""}</p><div class="progress-row"><span>${view === "progress" ? labels[g.status] : g.completed ? "Main story completed ✓" : view === "wishlist" ? "On your wishlist" : activeRuns().some((p) => p.catalogueId === g.id) ? "Currently playing" : "In catalogue"}</span><span>${view === "progress" ? percentLabel(g) : ""}</span></div>${view === "progress" ? `<progress max="100" value="${g.percent}" aria-label="Main story progress"></progress>` : ""}</div></button>`,
@@ -654,7 +678,7 @@ function render() {
     clearFilters();
   });
   $("#retry-sync")?.addEventListener("click", () =>
-    user ? subscribeLibrary() : initCloud(),
+    user ? subscribeLibrary({ force: true }) : initCloud(),
   );
   $("#review-local")?.addEventListener("click", () => migrateDeviceDialog());
   $("#dismiss-migration")?.addEventListener("click", () => {
@@ -663,7 +687,7 @@ function render() {
   });
   for (const id of ["add-btn", "import-btn", "enrich-btn"])
     $("#" + id).disabled = !!demoGames || syncStatus === "loading";
-  if (syncStatus === "loading" && !demoGames) {
+  if (syncStatus === "loading" && !demoGames && !list.length) {
     $("#games").innerHTML =
       '<div class="empty" role="status" aria-live="polite"><h2>Loading your synced library…</h2><p>Your games will appear here shortly.</p></div>';
     $("#results-count").textContent = "Loading…";
@@ -1853,9 +1877,17 @@ function settings() {
     return;
   }
   modal(
-    `<h2>Connections & settings</h2><div class="notice">${user ? "Google account connected." : "Sign in with Google for device sync and automatic details."} ${syncStatus === "error" ? "Sync needs attention." : user ? "Library sync is connected." : "Your library is stored on this device."}</div><p>Google sync keeps each game and its progress journal in your private account. Without sign-in, changes stay on this device.</p>${!user ? '<button id="settings-signin" class="primary">Sign in with Google</button>' : ""}<div class="detail-actions"><button id="backup">Download full backup</button><button id="trash">Recently removed games</button>${user && readLocal().length ? '<button id="migrate">Import this device’s local games</button>' : ""}<label>Restore backup<input id="restore" type="file" accept=".json,application/json"></label></div><p class="muted">CSV exports contain game details. Full backups also include progress history and recaps.</p>`,
+    `<h2>Connections & settings</h2><label class="theme-control">Appearance<select id="theme-mode" aria-label="Appearance"><option value="dark">Dark</option><option value="light">Light</option></select></label><div class="notice">${user ? "Google account connected." : "Sign in with Google for device sync and automatic details."} ${syncStatus === "error" ? "Sync needs attention." : user ? "Library sync is connected." : "Your library is stored on this device."}</div><p>${user ? "Changes save immediately to your private account. This device checks for changes once every 24 hours. Sync now to fetch other-device updates sooner." : "Without sign-in, changes stay on this device. Sign in to sync your catalogue and journals."}</p>${user ? `<button id="sync-now">Sync now</button><p class="muted">${syncCache?.lastSuccess ? "Last checked: " + e(new Date(syncCache.lastSuccess).toLocaleString()) : "This device has not finished its first sync."}</p>` : ""}${!user ? '<button id="settings-signin" class="primary">Sign in with Google</button>' : '<button id="settings-signout">Sign out</button>'}<details><summary>Collection overview</summary><div class="stats">${$("#stats").innerHTML}</div></details><div class="detail-actions"><button id="backup">Download full backup</button><button id="trash">Recently removed games</button>${user && readLocal().length ? '<button id="migrate">Import this device’s local games</button>' : ""}<label>Restore backup<input id="restore" type="file" accept=".json,application/json"></label></div><p class="muted">CSV exports contain game details. Full backups also include progress history and recaps.</p>`,
   );
+  $("#theme-mode").value = document.documentElement.dataset.theme;
+  $("#theme-mode").onchange = (ev) => applyTheme(ev.target.value);
+  $("#sync-now")?.addEventListener("click", async (ev) => {
+    ev.target.disabled = true;
+    await subscribeLibrary({ force: true });
+    if ($("#modal").open) settings();
+  });
   $("#trash").onclick = trashDialog;
+  $("#settings-signout")?.addEventListener("click", () => $("#login").click());
   $("#settings-signin")?.addEventListener("click", () => signIn(settings));
   $("#migrate")?.addEventListener("click", () => migrateDeviceDialog());
   $("#backup").onclick = () =>
@@ -1950,68 +1982,133 @@ async function api(route, body) {
   if (!r.ok) throw Error(data.error || "Request failed");
   return data;
 }
-function subscribeLibrary() {
+function readSyncCache(uid) {
+  try {
+    const cached = JSON.parse(
+      localStorage.getItem("questtracker.cloud-cache." + uid),
+    );
+    if (cached?.library) {
+      validateLibrary(cached.library);
+      return cached;
+    }
+  } catch {
+    /* No usable cache yet. */
+  }
+  return {
+    library: emptyLibrary(),
+    initialized: false,
+    cursor: null,
+    lastAttempt: 0,
+    lastSuccess: 0,
+  };
+}
+function writeSyncCache(uid) {
+  if (!syncCache || user?.uid !== uid) return;
+  syncCache.library = library;
+  try {
+    localStorage.setItem(
+      "questtracker.cloud-cache." + uid,
+      JSON.stringify(syncCache),
+    );
+  } catch {
+    /* A full cache is optional; server data is still authoritative. */
+  }
+}
+async function subscribeLibrary({ force = false } = {}) {
   if (!user || !cloud) return;
   unsubscribe?.();
   const uid = user.uid,
-    stops = [],
-    ready = { catalogue: false, playthroughs: false };
-  let legacyReady = false,
-    failed = false;
-  library = emptyLibrary();
+    generation = ++syncGeneration;
+  const current = () => user?.uid === uid && syncGeneration === generation;
+  unsubscribe = () => {
+    syncGeneration++;
+  };
+  syncCache = readSyncCache(uid);
+  library = syncCache.library;
   rebuildLibrary();
-  setSync("loading");
-  const finish = () => {
-    if (failed || user?.uid !== uid) return;
-    if (ready.catalogue && ready.playthroughs && legacyReady) {
-      syncStatus = "synced";
-      syncError = "";
-      $("#sync-state").textContent = "Synced across devices";
-      if (!importBusy) render();
+  if (!force && !syncDue(syncCache.lastAttempt)) {
+    if (syncCache.error) setSync("error", syncCache.error);
+    else if (!syncCache.initialized)
+      setSync(
+        "error",
+        "The first sync has not finished. Use Sync now to retry when your connection and Firebase quota are available.",
+      );
+    else {
+      setSync("synced");
+      $("#sync-state").textContent = "Saved · daily sync checked";
       finishSignIn();
     }
-  };
-  const fail = (err) => {
-    if (user?.uid !== uid) return;
-    failed = true;
-    setSync("error", "Catalogue sync needs attention. " + err.message);
-  };
-  for (const name of ["catalogue", "playthroughs"])
-    stops.push(
-      cloud.onSnapshot(
-        cloud.collection(cloud.db, "users", uid, name),
-        { includeMetadataChanges: true },
-        (snap) => {
-          if (user?.uid !== uid) return;
-          library[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
-          rebuildLibrary();
-          ready[name] =
-            !snap.metadata.fromCache && !snap.metadata.hasPendingWrites;
-          finish();
-        },
-        fail,
-      ),
+    render();
+    return;
+  }
+  syncCache.lastAttempt = Date.now();
+  writeSyncCache(uid);
+  setSync("loading");
+  render();
+  let syncTimer;
+  try {
+    const pulling = pullLibraryChanges(cloud, uid, syncCache, {
+      onInitial: (state) => {
+        if (!current()) return;
+        library = state;
+        rebuildLibrary();
+        writeSyncCache(uid);
+        render();
+      },
+      migrate: async (state, records) => {
+        if (!current()) throw Error("Your account changed.");
+        library = state;
+        rebuildLibrary();
+        for (let i = 0; i < records.length; i += 25) {
+          if (!current()) throw Error("Your account changed.");
+          await saveImportChunk(records.slice(i, i + 25), false, {
+            allowLoading: true,
+          });
+          writeSyncCache(uid);
+          render();
+        }
+        return library;
+      },
+    });
+    const result = await Promise.race([
+      pulling,
+      new Promise((_, reject) => {
+        syncTimer = setTimeout(
+          () =>
+            reject(
+              Error(
+                "The server took too long to respond. Check your connection or Firebase quota, then retry.",
+              ),
+            ),
+          30000,
+        );
+      }),
+    ]);
+    if (!current()) return;
+    library = result.library;
+    syncCache = { ...syncCache, ...result, error: "", lastSuccess: Date.now() };
+    writeSyncCache(uid);
+    rebuildLibrary();
+    setSync("synced");
+    $("#sync-state").textContent = "Saved · daily sync checked";
+    render();
+    finishSignIn();
+  } catch (err) {
+    if (!current()) return;
+    const quota = /quota|resource-exhausted/i.test(
+      err.message + " " + err.code,
     );
-  unsubscribe = () => stops.forEach((stop) => stop());
-  void (async () => {
-    try {
-      const snap = await cloud.getDocs(
-        cloud.collection(cloud.db, "users", uid, "games"),
-      );
-      if (user?.uid !== uid) return;
-      const legacy = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
-      for (let i = 0; i < legacy.length; i += 25) {
-        if (user?.uid !== uid) return;
-        await saveImportChunk(legacy.slice(i, i + 25), false, {
-          allowLoading: true,
-        });
-      }
-      legacyReady = true;
-      finish();
-    } catch (err) {
-      fail(err);
-    }
-  })();
+    syncCache.error = quota
+      ? "Firebase’s daily quota is exhausted. Cached games are available. Sync now after the quota resets; reopening won’t retry automatically today."
+      : "Sync could not finish. Your cached games are available. Use Sync now to retry. " +
+        err.message;
+    writeSyncCache(uid);
+    setSync("error", syncCache.error);
+    render();
+    syncGeneration++;
+  } finally {
+    clearTimeout(syncTimer);
+  }
 }
 
 async function initCloud() {
@@ -2235,7 +2332,7 @@ $("#view-toggle").setAttribute(
 );
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  $("#theme-mode").value = theme;
+  if ($("#theme-mode")) $("#theme-mode").value = theme;
   localStorage.setItem("questtracker.theme", theme);
   document.querySelector('meta[name="theme-color"]').content =
     theme === "light" ? "#f3f5ef" : "#101411";
@@ -2244,7 +2341,7 @@ applyTheme(
   localStorage.getItem("questtracker.theme") ||
     (matchMedia("(prefers-color-scheme:light)").matches ? "light" : "dark"),
 );
-$("#theme-mode").onchange = (ev) => applyTheme(ev.target.value);
+
 render();
 initCloud();
 
