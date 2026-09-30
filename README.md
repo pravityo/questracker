@@ -51,7 +51,7 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put STEAM_API_KEY
 ```
 
-Enter secret values into the CLI prompts, never source files or chat. Ensure your OpenAI project has billing and access to the selected model and Responses web search. Default model: `gpt-4.1-mini`. This can be changed with `OPENAI_MODEL`.
+Enter secret values into the CLI prompts, never source files or chat. Ensure your OpenAI project has billing and access to the selected model and Responses web search. Default model: `gpt-6.1-sol`, with low reasoning effort and additional output-token allowance for reasoning. This can be changed with `OPENAI_MODEL`.
 
 3. Set `apiBase` in `web/config.js` to the deployed Worker URL. Configure OpenAI spending controls in your API account as well as this app’s quota. The daily limit counts API calls, not updates: a researched update can use three calls (milestone lookup, evidence retrieval, recap). It resets at midnight UTC. Failed requests still consume the reserved count.
 
