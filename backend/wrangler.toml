@@ -4,7 +4,7 @@ compatibility_date = "2026-09-30"
 
 [vars]
 ALLOWED_ORIGINS = "http://127.0.0.1:5173,https://pravityo.github.io"
-ALLOWED_EMAIL = "YOUR_GOOGLE_EMAIL"
+ALLOWED_EMAIL = "pravityodika@gmail.com"
 FIREBASE_WEB_API_KEY = "AIzaSyCGkC7x0wOXY04qXnB1iWVBr68zvsupaDc"
 OPENAI_MODEL = "gpt-4.1-mini"
 DAILY_AI_LIMIT = "30"
