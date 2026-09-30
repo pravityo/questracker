@@ -1,0 +1,2 @@
+import {escapeHTML as e} from './core.js';
+export function progressErrorHTML(update,message){return `<h2>Couldn’t calculate progress</h2><div class="notice" role="alert">${e(message||'The progress service is unavailable. Please try again later.')}</div><p>Your saved progress hasn’t changed. Your update is kept here so you can retry.</p><div class="recap" aria-label="Your progress update">${e(update)}</div><div class="detail-actions"><button id="retry-progress" class="primary">Retry calculation</button><button id="return-game">Back to game</button></div>`;}
