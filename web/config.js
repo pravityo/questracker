@@ -8,5 +8,5 @@ export const config = {
     messagingSenderId: '342100013729',
     appId: '1:342100013729:web:525eac5f62bd1c9584f6e0'
   },
-  apiBase: ''
+  apiBase: 'https://questtracker-api.pravityo-questtracker.workers.dev'
 };
