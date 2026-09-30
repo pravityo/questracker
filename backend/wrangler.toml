@@ -1,0 +1,18 @@
+name = "questtracker-api"
+main = "worker.js"
+compatibility_date = "2026-09-30"
+
+[vars]
+ALLOWED_ORIGINS = "http://127.0.0.1:5173,https://pravityo.github.io"
+ALLOWED_EMAIL = "YOUR_GOOGLE_EMAIL"
+FIREBASE_WEB_API_KEY = "YOUR_FIREBASE_WEB_API_KEY"
+OPENAI_MODEL = "gpt-4.1-mini"
+DAILY_AI_LIMIT = "30"
+
+[[durable_objects.bindings]]
+name = "QUOTA"
+class_name = "Quota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Quota"]

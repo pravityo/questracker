@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Replace this placeholder with your Google email before deploying.
+    function owner(uid) {
+      return request.auth != null && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'YOUR_GOOGLE_EMAIL'
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    match /users/{uid}/games/{gameId} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid)
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.platform is string
+        && request.resource.data.genre is string
+        && request.resource.data.releaseDate is string
+        && request.resource.data.collection in ['owned', 'wishlist']
+        && request.resource.data.status in ['not-started', 'playing', 'paused', 'completed']
+        && request.resource.data.percent is number
+        && request.resource.data.percent >= 0 && request.resource.data.percent <= 100
+        && request.resource.data.history is list
+        && request.resource.data.milestones is list;
+    }
+  }
+}

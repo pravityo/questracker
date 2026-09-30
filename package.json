@@ -1,0 +1,1 @@
+{"name":"questtracker","private":true,"type":"module","scripts":{"dev":"node server.mjs","test":"node --test","check":"node --check web/app.js && node --check web/core.js && node --check backend/worker.js","build":"node build.mjs"}}
