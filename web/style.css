@@ -1608,3 +1608,47 @@ footer {
     font-size: 12px;
   }
 }
+
+/* Keep tabs centered, with compact visuals inside accessible tap targets. */
+@media (max-width: 850px) {
+  aside > nav {
+    align-items: center;
+    gap: 4px;
+  }
+  aside > nav button {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    border-radius: 8px;
+    padding: 8px 2px;
+    line-height: 1;
+    font-size: 13px;
+    text-align: center;
+  }
+  aside > nav button::before {
+    content: "";
+    position: absolute;
+    inset: 5px 0;
+    border-radius: 7px;
+    z-index: -1;
+  }
+  aside > nav button {
+    isolation: isolate;
+  }
+  aside > nav button.active::before {
+    background: var(--accent-panel);
+  }
+  aside > nav button span {
+    flex: 0 0 auto;
+  }
+}
+@media (max-width: 850px) {
+  aside > nav button.active {
+    background: transparent;
+  }
+}

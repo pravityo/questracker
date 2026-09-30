@@ -292,3 +292,37 @@ test("cached libraries are isolated by account", async () => {
   await ctx.sync();
   assert.equal(ctx.library.catalogue.length, 0);
 });
+test("failed progress sync cannot claim there are no stories when only catalogue data is cached", () => {
+  const start = appSource.indexOf(
+    '  if (syncStatus === "error" && user && !hasCollection',
+  );
+  const end = appSource.indexOf(
+    '  document.querySelectorAll(".cover img")',
+    start,
+  );
+  assert.ok(start >= 0 && end > start);
+  const nodes = new Map();
+  const node = (selector) => {
+    if (!nodes.has(selector))
+      nodes.set(selector, {
+        innerHTML: "No stories in progress yet",
+        textContent: "0",
+      });
+    return nodes.get(selector);
+  };
+  const stats = [{ textContent: "0" }];
+  vm.runInNewContext(appSource.slice(start, end), {
+    user: { uid: "owner" },
+    syncStatus: "error",
+    hasCollection: false,
+    demoGames: null,
+    view: "progress",
+    syncCache: { initialized: false },
+    $: node,
+    document: { querySelectorAll: () => stats },
+  });
+  assert.match(node("#games").innerHTML, /Playthrough sync is unavailable/);
+  assert.doesNotMatch(node("#games").innerHTML, /No stories in progress yet/);
+  assert.equal(node("#progress-count").textContent, "—");
+  assert.equal(node("#results-count").textContent, "Sync unavailable");
+});

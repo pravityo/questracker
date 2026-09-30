@@ -325,3 +325,45 @@ test("backup validation rejects duplicate and unlinked playthroughs", () => {
     }),
   );
 });
+test("targeted recovery restores missing migrated progress and preserves its journal", () => {
+  const old = legacy("lost", "Switch", {
+    status: "playing",
+    percent: 40,
+    history: [entry("story", 40)],
+  });
+  let state = migrateLegacy(emptyLibrary(), [old]);
+  state.playthroughs = [];
+  assert.equal(migrateLegacy(state, [old]).playthroughs.length, 0);
+  const recovered = migrateLegacy(state, [old], { repairMissing: true });
+  assert.equal(recovered.playthroughs.length, 1);
+  assert.equal(recovered.playthroughs[0].percent, 40);
+  assert.deepEqual(recovered.playthroughs[0].history, old.history);
+  assert.deepEqual(
+    migrateLegacy(recovered, [old], { repairMissing: true }),
+    recovered,
+  );
+});
+test("targeted recovery never reopens an archived playthrough or restores removed progress", () => {
+  const old = legacy("done", "Steam", {
+    status: "completed",
+    percent: 100,
+    history: [entry("end", 100)],
+  });
+  const completed = migrateLegacy(emptyLibrary(), [old]);
+  assert.deepEqual(
+    migrateLegacy(completed, [old], { repairMissing: true }),
+    completed,
+  );
+  const removed = legacy("removed", "Switch", {
+    deletedAt: 123,
+    status: "playing",
+    percent: 40,
+    history: [entry("story", 40)],
+  });
+  const state = migrateLegacy(emptyLibrary(), [removed]);
+  state.playthroughs = [];
+  assert.deepEqual(
+    migrateLegacy(state, [removed], { repairMissing: true }),
+    state,
+  );
+});

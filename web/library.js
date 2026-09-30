@@ -202,17 +202,43 @@ export function applyPlaythrough(state, input, { journalOnly = false } = {}) {
     playthroughs: [...state.playthroughs.filter((p) => p.id !== run.id), run],
   };
 }
-export function migrateLegacy(state, legacy) {
+export function migrateLegacy(state, legacy, { repairMissing = false } = {}) {
   state = structuredClone(state);
   for (const g of legacy) {
     const existing = state.catalogue.find(
       (c) => titleKey(c.title) === titleKey(g.title),
     );
+    if (
+      repairMissing &&
+      (existing?.deletedAt ||
+        existing?.copies?.some(
+          (c) =>
+            c.deletedAt &&
+            normalizePlatform(c.platform) === normalizePlatform(g.platform) &&
+            titleKey(c.edition || "") === titleKey(g.edition || ""),
+        ))
+    )
+      continue;
     const cat = mergeCatalogue(existing, makeCatalogue(g));
     const stamp = g.updatedAt || 0;
+    const runId = "run-" + g.id;
+    const runExists =
+      state.playthroughs.some((p) => p.id === runId) ||
+      (cat.completedPlaythroughs || []).some((p) => p.id === runId);
+    const hasProgress =
+      (g.history || []).length ||
+      g.percent > 0 ||
+      ["playing", "paused", "completed"].includes(g.status);
+    const needsRepair =
+      repairMissing &&
+      !runExists &&
+      hasProgress &&
+      !g.deletedAt &&
+      !existing?.deletedAt;
     if (
       Object.hasOwn(cat.migratedLegacy, g.id) &&
-      cat.migratedLegacy[g.id] >= stamp
+      cat.migratedLegacy[g.id] >= stamp &&
+      !needsRepair
     )
       continue;
     cat.migratedLegacy[g.id] = stamp;

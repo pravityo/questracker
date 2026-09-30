@@ -333,7 +333,11 @@ function trashDialog() {
       }),
   );
 }
-async function saveImportChunk(items, fill, options = {}) {
+async function saveImportChunk(
+  items,
+  fill,
+  { repairMissing = false, ...options } = {},
+) {
   const catIds = items.map(
     (g) =>
       library.catalogue.find((c) => titleKey(c.title) === titleKey(g.title))
@@ -350,7 +354,7 @@ async function saveImportChunk(items, fill, options = {}) {
   await commitLibrary(
     catIds,
     runIds,
-    (state) => migrateLegacy(state, items),
+    (state) => migrateLegacy(state, items, { repairMissing }),
     options,
   );
 }
@@ -692,9 +696,18 @@ function render() {
       '<div class="empty" role="status" aria-live="polite"><h2>Loading your synced library…</h2><p>Your games will appear here shortly.</p></div>';
     $("#results-count").textContent = "Loading…";
   }
-  if (syncStatus === "error" && !games.length && !demoGames)
+  if (syncStatus === "error" && user && !hasCollection && !demoGames) {
     $("#games").innerHTML =
-      '<div class="empty"><h2>Your library couldn’t be loaded</h2><p>Use Retry sync above to reconnect.</p></div>';
+      `<div class="empty" role="status"><h2>${view === "progress" ? "Playthrough sync is unavailable" : "Your collection hasn’t loaded"}</h2><p>${view === "progress" ? "This device cannot confirm your latest progress while sync is unavailable. Missing cached entries do not confirm that your journals were deleted." : "Your latest collection could not be checked. Previously cached games remain available."}</p><p>Use Retry sync above when Firebase is available.</p></div>`;
+    $("#results-count").textContent = "Sync unavailable";
+    if (!syncCache?.initialized) {
+      for (const id of ["owned-count", "wish-count", "progress-count"])
+        $("#" + id).textContent = "—";
+      document
+        .querySelectorAll("#stats strong")
+        .forEach((el) => (el.textContent = "—"));
+    }
+  }
   document.querySelectorAll(".cover img").forEach(
     (img) =>
       (img.onerror = () => {
@@ -755,7 +768,7 @@ function catalogueDetail(g) {
     archives = g.completedPlaythroughs || [],
     owned = g.copies.filter((c) => c.collection === "owned" && !c.deletedAt);
   const version = modal(
-    `<div class="catalogue-detail"><div class="eyebrow">GAME CATALOGUE</div><h2>${e(g.title)}</h2><div class="detail-meta"><span class="badge">${e(g.genre)}</span>${g.completed ? '<span class="badge">Main story completed ✓</span>' : ""}</div><h3>Your platforms</h3><ul class="ownership-list">${g.copies.map((c) => `<li><strong>${e(c.platform)}</strong>${c.edition ? ` · ${e(c.edition)}` : ""}<span class="badge">${c.deletedAt ? "Removed copy" : c.collection === "owned" ? "Owned" : "Wishlist"}</span>${c.releaseDate ? `<small class="muted">Released ${e(c.releaseDate)}</small>` : ""}</li>`).join("")}</ul><p class="muted">Ownership lives here. Each playthrough keeps its own stopping point and story journal.</p>${!demoGames && owned.length ? '<button id="start-playthrough" class="primary">Start a playthrough</button>' : ""}<h3>Currently playing</h3><div class="lookup-results">${runs.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>${labels[p.status]} · ${p.percent}% main story</span><span class="muted">${e(p.history.at(-1)?.label || "Ready to begin")}</span></button>`).join("") || '<p class="muted">No active playthroughs.</p>'}</div><h3>Completed stories</h3><div class="lookup-results">${archives.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>Main story completed · Read recap & journal</span><small class="muted">${e(p.completedAt ? new Date(p.completedAt).toLocaleDateString() : p.history.at(-1)?.date || "")}</small></button>`).join("") || '<p class="muted">No completed playthroughs yet.</p>'}</div>${demoGames ? '<p class="muted">Read-only sample catalogue.</p>' : '<div class="detail-actions"><button id="edit-catalogue">Edit details & platforms</button><button id="catalogue-rawg">Find missing details</button><button id="remove-catalogue" class="quiet">Remove catalogue game</button></div>'}<div id="dialog-error" role="alert" hidden></div></div>`,
+    `<div class="catalogue-detail"><div class="eyebrow">GAME CATALOGUE</div><h2>${e(g.title)}</h2><div class="detail-meta"><span class="badge">${e(g.genre)}</span>${g.completed ? '<span class="badge">Main story completed ✓</span>' : ""}</div><h3>Your platforms</h3><ul class="ownership-list">${g.copies.map((c) => `<li><strong>${e(c.platform)}</strong>${c.edition ? ` · ${e(c.edition)}` : ""}<span class="badge">${c.deletedAt ? "Removed copy" : c.collection === "owned" ? "Owned" : "Wishlist"}</span>${c.releaseDate ? `<small class="muted">Released ${e(c.releaseDate)}</small>` : ""}</li>`).join("")}</ul><p class="muted">Ownership lives here. Each playthrough keeps its own stopping point and story journal.</p>${!demoGames && owned.length ? '<button id="start-playthrough" class="primary">Start a playthrough</button>' : ""}${user && !demoGames ? '<button id="recover-progress" class="quiet">Recover earlier progress</button>' : ""}<h3>Currently playing</h3><div class="lookup-results">${runs.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>${labels[p.status]} · ${p.percent}% main story</span><span class="muted">${e(p.history.at(-1)?.label || "Ready to begin")}</span></button>`).join("") || (user && syncStatus === "error" ? '<p class="muted">No playthroughs in this device’s cache. Sync is unavailable, so newer progress may not have loaded.</p>' : '<p class="muted">No active playthroughs.</p>')}</div><h3>Completed stories</h3><div class="lookup-results">${archives.map((p) => `<button data-playthrough="${e(p.id)}"><strong>${e(p.platform)}${p.edition ? " · " + e(p.edition) : ""}</strong><span>Main story completed · Read recap & journal</span><small class="muted">${e(p.completedAt ? new Date(p.completedAt).toLocaleDateString() : p.history.at(-1)?.date || "")}</small></button>`).join("") || '<p class="muted">No completed playthroughs yet.</p>'}</div>${demoGames ? '<p class="muted">Read-only sample catalogue.</p>' : '<div class="detail-actions"><button id="edit-catalogue">Edit details & platforms</button><button id="catalogue-rawg">Find missing details</button><button id="remove-catalogue" class="quiet">Remove catalogue game</button></div>'}<div id="dialog-error" role="alert" hidden></div></div>`,
   );
   document
     .querySelectorAll("[data-playthrough]")
@@ -765,6 +778,71 @@ function catalogueDetail(g) {
   $("#start-playthrough")?.addEventListener("click", () =>
     startPlaythroughDialog(g),
   );
+  $("#recover-progress")?.addEventListener("click", async (ev) => {
+    const uid = user?.uid;
+    ev.target.disabled = true;
+    try {
+      const ids = Object.keys(g.migratedLegacy || {});
+      const snapshots = ids.length
+        ? await Promise.all(
+            ids.map((id) =>
+              cloud.getDocFromServer(
+                cloud.doc(cloud.db, "users", uid, "games", id),
+              ),
+            ),
+          )
+        : (
+            await cloud.getDocsFromServer(
+              cloud.query(
+                cloud.collection(cloud.db, "users", uid, "games"),
+                cloud.where("title", "==", g.title),
+              ),
+            )
+          ).docs;
+      if (user?.uid !== uid) return;
+      const state = library,
+        cat = state.catalogue.find((c) => c.id === g.id);
+      if (!cat || cat.deletedAt)
+        throw Error("Restore this catalogue game before recovering its story.");
+      const records = snapshots
+        .filter((s) => s.exists())
+        .map((s) => ({ ...s.data(), id: s.id }))
+        .filter((old) => {
+          const id = "run-" + old.id;
+          return (
+            !old.deletedAt &&
+            (old.history?.length ||
+              old.percent > 0 ||
+              ["playing", "paused", "completed"].includes(old.status)) &&
+            !state.playthroughs.some((p) => p.id === id) &&
+            !cat?.completedPlaythroughs?.some((p) => p.id === id)
+          );
+        });
+      if (records.length) {
+        await saveImportChunk(
+          records.map((old) => ({ ...old, title: g.title })),
+          false,
+          { repairMissing: true },
+        );
+        if (isCurrent(version)) detail(g.id);
+        toast("Earlier progress recovered with its journal and recaps.");
+      } else {
+        toast(
+          "No missing earlier playthrough was found. Existing journals are unchanged.",
+        );
+        ev.target.disabled = false;
+      }
+    } catch (err) {
+      if (isCurrent(version)) {
+        inlineError(
+          /quota|resource-exhausted/i.test(err.message + " " + err.code)
+            ? "Firebase quota is still exhausted. Retry recovery after it resets."
+            : err.message,
+        );
+        ev.target.disabled = false;
+      }
+    }
+  });
   $("#edit-catalogue")?.addEventListener("click", () => addDialog(g));
   $("#catalogue-rawg")?.addEventListener("click", () => lookupGame(g));
   $("#remove-catalogue")?.addEventListener("click", () => {
