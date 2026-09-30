@@ -173,7 +173,10 @@ export function applyPlaythrough(state, input, { journalOnly = false } = {}) {
     run.status = "completed";
     run.percent = 100;
     run.completedAt =
-      archived?.completedAt || incoming.completedAt || new Date().toISOString();
+      archived?.completedAt ||
+      incoming.completedAt ||
+      run.history.at(-1)?.date ||
+      new Date().toISOString();
     return {
       ...state,
       catalogue: state.catalogue.map((c) =>
