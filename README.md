@@ -116,3 +116,13 @@ RAWG requests require the verified Google owner and have a separate 100-request 
 - Story, Update progress and Journal tabs keep long recaps separate from updates. Estimated percentages use `~` consistently. Draft updates stay in session storage until saved.
 - Import review includes every row, normalizes known platform aliases and year-first dates, and flags ambiguous dates for correction. Matching includes edition. Duplicate handling either skips records or fills missing metadata while preserving progress.
 - Mobile uses collapsible overview and filters, touch-sized controls, and full-screen dialogs. Card and compact list views are available. Dialog headings, focus restoration, keyboard tab navigation and reduced motion are supported.
+
+
+### Collection recovery, appearance and bulk review
+
+- CSV review displays 25 rows per page. When collection status is absent, choose Library or Wishlist before saving. Imports commit up to 25 games per transaction and serialize a local batch once. Pause waits for the current batch; resume matches saved games safely. Closing the page interrupts the job: select the CSV again to resume through duplicate matching.
+- Removed games stay in **Settings → Recently removed games**, including their journals and recaps. Restore them there. Full backups include removed games; CSV exports contain active games.
+- Appearance offers Light and Dark. The initial choice follows the device, and an explicit choice is remembered on that browser. Compact list mode is remembered too.
+- Fill missing details can propose 20 RAWG matches at a time. Only unique exact title/platform matches are proposed. Review and select suggestions; unmatched games remain available for manual lookup. This can use up to 40 of the 100 daily metadata lookup calls. Existing fields, ownership and journals are preserved.
+- New recaps cover the main story from the beginning to the confirmed stopping point, summarizing earlier arcs and detailing the latest three completed chapters (or equivalent recent segment). Source evidence must cover both arcs. Notes-only recaps cannot invent earlier events absent from the notes. Use **Refresh full story recap** to update an existing recap.
+- Steam import is available under **Import games → Import from Steam**. Set a personal Steam Web API key as the Cloudflare secret `STEAM_API_KEY` (`npx wrangler secret put STEAM_API_KEY` from `backend/`). Enter SteamID64 with public game details, then review and import. Re-import later for newly owned games; playtime does not change story progress. No background polling is performed.

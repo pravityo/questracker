@@ -261,3 +261,17 @@ test("late background recap cannot recreate a deleted game", async () => {
   );
   assert.equal(written(), undefined);
 });
+
+test("an empty refreshed recap never erases an existing recap", async () => {
+  const {state,run}=recapHarness(async()=>({recap:'',sources:[],warning:'Earlier story sources unavailable.'}));
+  state.games[0].history[1].recap='Saved full recap';
+  await run();
+  assert.equal(state.games[0].history[1].recap,'Saved full recap');
+  assert.equal(state.games[0].history[1].recapStatus,'error');
+});
+test("late recap cannot update a game moved to recently removed",async()=>{
+  const remote={...structuredClone(game),deletedAt:Date.now()};
+  const {state,written}=persistenceHarness(remote);
+  await assert.rejects(state.saveGame({...game},{journalOnly:true}),/deleted/);
+  assert.equal(written(),undefined);
+});

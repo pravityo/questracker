@@ -1,6 +1,15 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 :root {
   color-scheme: dark;
+  --text: #edf1e9;
+  --control: #202720;
+  --sidebar: #141914;
+  --surface: #171d17;
+  --notice: #302d1d;
+  --warning: #f4ce79;
+  --soft: #c8d0c3;
+  --accent-panel: #293324;
+  --accent-text: #d1f58a;
   --bg: #101411;
   --panel: #191e1a;
   --border: #2c342c;
@@ -13,7 +22,7 @@
 body {
   margin: 0;
   background: var(--bg);
-  color: #edf1e9;
+  color: var(--text);
   font:
     16px "DM Sans",
     sans-serif;
@@ -26,8 +35,8 @@ textarea {
 }
 button {
   cursor: pointer;
-  background: #202720;
-  color: #edf1e9;
+  background: var(--control);
+  color: var(--text);
   border: 1px solid var(--border);
   padding: 11px 16px;
   border-radius: 8px;
@@ -58,11 +67,11 @@ aside {
   padding: 32px 22px;
   display: flex;
   flex-direction: column;
-  background: #141914;
+  background: var(--sidebar);
 }
 .brand {
   font: 700 21px "Space Grotesk";
-  color: #f2f5ed;
+  color: var(--text);
   text-decoration: none;
   display: flex;
   gap: 12px;
@@ -102,7 +111,7 @@ nav b {
   padding: 2px 5px;
 }
 nav .active {
-  background: #293324;
+  background: var(--accent-panel);
   color: var(--lime);
 }
 .side-note {
@@ -227,9 +236,9 @@ h2 {
 input,
 select,
 textarea {
-  background: #191f19;
+  background: var(--panel);
   border: 1px solid var(--border);
-  color: #edf1e9;
+  color: var(--text);
   border-radius: 7px;
   padding: 11px 12px;
   min-width: 0;
@@ -393,8 +402,8 @@ dialog {
   max-width: 760px;
   width: calc(100% - 32px);
   max-height: 90vh;
-  background: #171d17;
-  color: #edf1e9;
+  background: var(--surface);
+  color: var(--text);
   border: 1px solid #44513e;
   border-radius: 15px;
   padding: 30px;
@@ -426,7 +435,7 @@ label {
   display: grid;
   gap: 7px;
   font-size: 14px;
-  color: #c8d0c3;
+  color: var(--soft);
 }
 .form-row {
   display: grid;
@@ -444,20 +453,20 @@ textarea {
 }
 .badge {
   padding: 6px 10px;
-  background: #293225;
+  background: var(--accent-panel);
   border-radius: 5px;
   font-size: 13px;
 }
 .detail-progress {
   margin: 20px 0;
   padding: 18px;
-  background: #232c20;
+  background: var(--accent-panel);
   border-radius: 10px;
 }
 .recap {
   white-space: pre-wrap;
   line-height: 1.8;
-  background: #121712;
+  background: var(--surface);
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -482,7 +491,7 @@ textarea {
 .notice {
   padding: 14px;
   border: 1px solid #5e5934;
-  background: #302d1d;
+  background: var(--notice);
   border-radius: 8px;
   font-size: 14px;
   line-height: 1.6;
@@ -522,7 +531,7 @@ textarea {
   color: var(--lime);
 }
 .warning {
-  color: #f4ce79;
+  color: var(--warning);
 }
 .dialog-tabs {
   display: flex;
@@ -716,7 +725,7 @@ summary {
   cursor: pointer;
   min-height: 44px;
   padding: 12px 0;
-  color: #c8d0c3;
+  color: var(--soft);
 }
 h2[tabindex="-1"]:focus {
   outline: none;
@@ -742,7 +751,7 @@ h2[tabindex="-1"]:focus {
   margin-top: 20px;
   border: 1px solid #596b46;
   border-radius: 10px;
-  background: #212a1d;
+  background: var(--accent-panel);
 }
 .app-notice span {
   flex: 1;
@@ -867,7 +876,7 @@ h2[tabindex="-1"]:focus {
 .dialog-tabs {
   position: sticky;
   top: 0;
-  background: #171d17;
+  background: var(--surface);
   padding: 8px 0;
   z-index: 2;
   display: flex;
@@ -879,7 +888,7 @@ h2[tabindex="-1"]:focus {
   font-size: 14px;
 }
 .dialog-tabs [aria-selected="true"] {
-  background: #293324;
+  background: var(--accent-panel);
   color: var(--lime);
   border-color: #526443;
 }
@@ -925,15 +934,15 @@ h2[tabindex="-1"]:focus {
   position: sticky;
   bottom: -30px;
   padding: 14px 0;
-  background: #171d17;
+  background: var(--surface);
   display: flex;
   gap: 10px;
   border-top: 1px solid var(--border);
 }
 #dialog-error:not([hidden]) {
   border: 1px solid #806a3c;
-  background: #302d1d;
-  color: #f4ce79;
+  background: var(--notice);
+  color: var(--warning);
   padding: 12px;
   border-radius: 8px;
   font-size: 14px;
@@ -1325,7 +1334,7 @@ footer {
 
 .card-info .card-edition {
   font-size: 13px;
-  color: #c8d0c3;
+  color: var(--soft);
   margin-bottom: 8px;
 }
 .close {
@@ -1335,7 +1344,7 @@ footer {
   margin-top: -12px;
   margin-right: -12px;
   z-index: 5;
-  background: #171d17;
+  background: var(--surface);
 }
 .dialog-tabs {
   top: 40px;
@@ -1362,4 +1371,106 @@ footer {
   min-height: 20px;
   margin: 0;
   accent-color: var(--lime);
+}
+
+/* Fit the entire image in every card, compact row and match preview. */
+.cover img,
+.match-cover {
+  object-fit: contain;
+  object-position: center;
+  background: var(--surface);
+}
+.cover:has(img)::before,
+.cover:has(img)::after {
+  display: none;
+}
+.cover:has(img) .pill {
+  top: auto;
+  bottom: 8px;
+  right: 8px;
+}
+.cover {
+  padding-bottom: 36px;
+}
+.cover-title,
+.pill {
+  color: #edf1e9;
+}
+.filter-chip,
+.review-filter {
+  min-height: 44px;
+}
+.review-filter {
+  padding: 10px 0;
+  align-items: center;
+}
+.theme-control {
+  font-size: 13px;
+  margin: 12px 0;
+}
+.theme-control select {
+  min-height: 44px;
+  width: 100%;
+}
+#import-meter {
+  width: 100%;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f5ef;
+  --panel: #fff;
+  --border: #c8d1c2;
+  --muted: #52604f;
+  --text: #1d2a1b;
+  --soft: #3d4c39;
+  --control: #e7eddf;
+  --sidebar: #eaf0e3;
+  --surface: #edf2e7;
+  --notice: #fff1d0;
+  --warning: #785214;
+  --accent-panel: #e0eacb;
+  --lime: #345d19;
+  --accent-text: #345d19;
+}
+[data-theme="light"] button.primary {
+  background: #345d19;
+  color: #fff;
+}
+[data-theme="light"] .brand-icon,
+[data-theme="light"] .skip-link {
+  color: #fff;
+}
+[data-theme="light"] #resume {
+  background: linear-gradient(110deg, #e1edce, #f0f5e8);
+}
+[data-theme="light"] .resume-card {
+  background: linear-gradient(110deg, #e1edce, #f0f5e8);
+}
+[data-theme="light"] .badge {
+  background: #e0eacb;
+  color: #2f4b24;
+}
+[data-theme="light"] #toast {
+  background: #345d19;
+  color: #fff;
+}
+@media (max-width: 850px) {
+  .theme-control {
+    margin: 0;
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .theme-control select {
+    width: auto;
+    flex: 1;
+  }
+}
+
+.cover:has(img) img {
+  height: calc(100% - 36px);
+}
+.compact .cover:has(img) img {
+  height: 100%;
 }

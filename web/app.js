@@ -15,6 +15,7 @@ import {
   key,
   planImport,
   mergeMissingDetails,
+  buildImportWork,
 } from "./core.js";
 import { config } from "./config.js";
 const $ = (s) => document.querySelector(s);
@@ -49,13 +50,17 @@ const filtersByView = {};
 let detailTab = "story";
 let authContinuation = null;
 let metadataQueueActive = false;
-const displayedGames = () => demoGames || games;
+const metadataBatchSeen = new Set();
+const activeGames = () => games.filter((g) => !g.deletedAt);
+const displayedGames = () => demoGames || activeGames();
 const percentLabel = (g) =>
   `${g.history.at(-1)?.estimated ? "~" : ""}${g.percent}%`;
+let importBusy = false,
+  importPause = false;
 function setSync(status, message = "") {
   syncStatus = status;
   syncError = message;
-  render();
+  if (!importBusy) render();
 }
 function clearFilters() {
   for (const id of ["search", "platform", "genre", "status", "year"])
@@ -128,7 +133,18 @@ function modal(html) {
   }
   return modalVersion;
 }
-$(".close").onclick = () => $("#modal").close();
+$(".close").onclick = () => {
+  if (importBusy) {
+    importPause = true;
+    toast("Pausing after the current batch. Keep this window open to resume.");
+  } else $("#modal").close();
+};
+$("#modal").addEventListener("cancel", (ev) => {
+  if (importBusy) {
+    ev.preventDefault();
+    importPause = true;
+  }
+});
 $("#modal").addEventListener("close", () => {
   modalVersion++;
   metadataQueueActive = false;
@@ -142,10 +158,15 @@ $("#modal").addEventListener("close", () => {
   (target || $("#add-btn")).focus();
 });
 // Backdrop clicks do not silently discard forms or submitted updates.
-async function saveGame(g, { journalOnly = false } = {}) {
+async function saveGame(g, { journalOnly = false, metadataOnly = false } = {}) {
   if (demoGames) throw Error("Exit the demo to change your library.");
   if (user && syncStatus === "loading")
     throw Error("Wait for your synced library to load.");
+  if (
+    (journalOnly || metadataOnly) &&
+    games.find((x) => x.id === g.id)?.deletedAt
+  )
+    throw Error("This game was removed.");
   const ownerUid = user?.uid || null;
   g = { ...g, updatedAt: Date.now() };
   if (user && cloud) {
@@ -155,6 +176,10 @@ async function saveGame(g, { journalOnly = false } = {}) {
           snap = await tx.get(ref);
         if (snap.exists()) {
           const remote = snap.data();
+          if (metadataOnly) {
+            if (remote.deletedAt) throw Error("This game was removed.");
+            g = { ...mergeMissingDetails(remote, g), id: g.id };
+          }
           const merged = [
             ...new Map(
               [...(remote.history || []), ...g.history]
@@ -174,7 +199,10 @@ async function saveGame(g, { journalOnly = false } = {}) {
             g.status = last.percent === 100 ? "completed" : "playing";
           }
         }
-        if (journalOnly && !snap.exists())
+        if (
+          (journalOnly || metadataOnly) &&
+          (!snap.exists() || snap.data().deletedAt)
+        )
           throw Error("This game was deleted. Its recap will not recreate it.");
         tx.set(ref, g);
       });
@@ -198,12 +226,112 @@ async function saveGame(g, { journalOnly = false } = {}) {
     : "Local library · this device only";
 }
 async function removeGame(id) {
-  if (user && cloud)
-    await cloud.deleteDoc(cloud.doc(cloud.db, "users", user.uid, "games", id));
-  games = games.filter((g) => g.id !== id);
-  if (!user) localStorage.setItem(localKey, JSON.stringify(games));
-  render();
+  const game = games.find((g) => g.id === id);
+  if (game) await saveGame({ ...game, deletedAt: Date.now() });
 }
+function trashDialog() {
+  const removed = games.filter((g) => g.deletedAt);
+  modal(
+    `<h2>Recently removed games</h2><p>Games and their complete journals stay here until you restore them. They are included in full backups.</p><div id="dialog-error" role="alert" hidden></div><div class="lookup-results">${removed.map((g) => `<button data-restore-game="${e(g.id)}">Restore ${e(g.title)} · ${e(g.platform)}</button>`).join("") || "<p>No removed games.</p>"}</div><button id="trash-back">Back to settings</button>`,
+  );
+  $("#trash-back").onclick = settings;
+  document.querySelectorAll("[data-restore-game]").forEach(
+    (b) =>
+      (b.onclick = async () => {
+        b.disabled = true;
+        try {
+          const g = games.find((g) => g.id === b.dataset.restoreGame);
+          if (activeGames().some((x) => key(x) === key(g)))
+            throw Error(
+              "An active copy already exists. Edit that copy before restoring this game.",
+            );
+          await saveGame({ ...g, deletedAt: null });
+          trashDialog();
+        } catch (err) {
+          inlineError(err.message);
+          b.disabled = false;
+        }
+      }),
+  );
+}
+async function saveImportChunk(items, fill) {
+  const uid = user?.uid || null;
+  let saved = [];
+  if (user && cloud) {
+    await cloud.runTransaction(cloud.db, async (tx) => {
+      const refs = items.map((g) =>
+        cloud.doc(cloud.db, "users", uid, "games", g.id),
+      );
+      const snaps = await Promise.all(refs.map((ref) => tx.get(ref)));
+      saved = items.map((g, i) =>
+        snaps[i].exists()
+          ? fill
+            ? mergeMissingDetails(snaps[i].data(), g)
+            : { ...snaps[i].data(), id: g.id }
+          : g,
+      );
+      saved.forEach((g, i) => tx.set(refs[i], { ...g, updatedAt: Date.now() }));
+    });
+  } else saved = items;
+  if ((user?.uid || null) !== uid)
+    throw Error("Your account changed. Reopen the library before retrying.");
+  for (const g of saved) {
+    const i = games.findIndex((x) => x.id === g.id);
+    if (i < 0) games.push(g);
+    else games[i] = g;
+  }
+  if (!user) localStorage.setItem(localKey, JSON.stringify(games));
+}
+async function continueStoryAfterSignIn(g, tab = "story") {
+  const existing = activeGames().find((x) => key(x) === key(g));
+  const open = (id) => {
+    detail(id, "", tab);
+  };
+  if (
+    existing &&
+    g.history.every((h) => existing.history.some((x) => x.id === h.id))
+  ) {
+    open(existing.id);
+    return;
+  }
+  modal(
+    `<h2>Sync this game to continue</h2><p>${e(g.title)} is saved on this device. Sync its journal to your Google library, then continue where you left off. Existing cloud story entries are preserved.</p><div id="dialog-error" role="alert" hidden></div><button id="sync-story" class="primary">Sync game & continue</button>`,
+  );
+  $("#sync-story").onclick = async (ev) => {
+    ev.target.disabled = true;
+    try {
+      const merged = existing
+        ? {
+            ...existing,
+            history: [
+              ...existing.history,
+              ...g.history.filter(
+                (h) => !existing.history.some((x) => x.id === h.id),
+              ),
+            ].sort((a, b) => a.date.localeCompare(b.date)),
+          }
+        : g;
+      const latest = merged.history.at(-1);
+      if (latest) {
+        merged.percent = latest.percent;
+        merged.status = latest.percent === 100 ? "completed" : "playing";
+      }
+      await saveGame(merged);
+      open(merged.id);
+    } catch (err) {
+      inlineError(err.message);
+      ev.target.disabled = false;
+    }
+  };
+}
+function finishSignIn() {
+  if (user && authContinuation && syncStatus === "synced") {
+    const next = authContinuation;
+    authContinuation = null;
+    next();
+  }
+}
+
 function filtered() {
   return displayedGames()
     .filter(
@@ -440,8 +568,14 @@ document.querySelectorAll("[data-view]").forEach(
       render();
     }),
 );
+let searchTimer;
 ["search", "platform", "genre", "status", "year", "sort"].forEach((id) =>
-  $("#" + id).addEventListener(id === "search" ? "input" : "change", render),
+  $("#" + id).addEventListener(id === "search" ? "input" : "change", () => {
+    if (id === "search") {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(render, 150);
+    } else render();
+  }),
 );
 $("#clear-filters").onclick = clearFilters;
 $("#filter-toggle").onclick = () => {
@@ -519,7 +653,7 @@ $("#enrich-btn").onclick = () => {
   metadataQueue();
 };
 function metadataQueue() {
-  const missing = games.filter(
+  const missing = activeGames().filter(
     (g) =>
       !g.cover ||
       !g.developer ||
@@ -535,9 +669,18 @@ function metadataQueue() {
     return;
   }
   modal(
-    `<h2>Fill missing game details</h2><p>${missing.length} games remaining. Choose a game and review its RAWG match. You’ll return here after saving.</p><button id="queue-done" class="quiet">Done for now</button><div class="lookup-results">${missing.map((g) => `<button data-enrich="${e(g.id)}">${e(g.title)} <span class="muted">${e(g.platform)}</span></button>`).join("")}</div>`,
+    `<h2>Fill missing game details</h2><p>${missing.length} games remaining. Choose a game and review its RAWG match. You’ll return here after saving.</p><button id="bulk-metadata" class="primary">Suggest matches for next 20 games</button><p class="muted">Exact title and platform matches are proposed for review. Other matches stay in the manual queue. Up to 40 lookup requests per batch.</p><button id="queue-done" class="quiet">Done for now</button><div class="lookup-results">${missing.map((g) => `<button data-enrich="${e(g.id)}">${e(g.title)} <span class="muted">${e(g.platform)}</span></button>`).join("")}</div>`,
   );
   $("#queue-done").onclick = () => $("#modal").close();
+  $("#bulk-metadata").onclick = () =>
+    user
+      ? bulkMetadata(
+          (missing.filter((g) => !metadataBatchSeen.has(g.id)).length
+            ? missing.filter((g) => !metadataBatchSeen.has(g.id))
+            : missing
+          ).slice(0, 20),
+        )
+      : signIn(() => metadataQueue());
   document
     .querySelectorAll("[data-enrich]")
     .forEach(
@@ -546,10 +689,104 @@ function metadataQueue() {
           lookupGame(games.find((g) => g.id === b.dataset.enrich))),
     );
 }
+async function bulkMetadata(queue) {
+  const owner = user?.uid;
+  let proposals = [],
+    unmatched = [],
+    stopped = false;
+  const version = modal(
+    '<h2>Finding metadata matches</h2><p id="batch-status" role="status" aria-live="polite">Checking titles and platforms…</p><button id="batch-stop">Stop & review matches found</button>',
+  );
+  $("#batch-stop").onclick = () => {
+    stopped = true;
+    $("#batch-stop").disabled = true;
+  };
+  const titleKey = (title) =>
+    title.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  let error = "";
+  for (const g of queue) {
+    if (stopped || !isCurrent(version) || user?.uid !== owner) break;
+    try {
+      metadataBatchSeen.add(g.id);
+      const { games: results } = await api("/rawg/search", { query: g.title });
+      const matches = results.filter(
+        (m) =>
+          titleKey(m.title) === titleKey(g.title) &&
+          m.platforms.some(
+            (p) => normalizePlatform(p.name) === normalizePlatform(g.platform),
+          ),
+      );
+      if (matches.length !== 1) {
+        unmatched.push(g);
+        continue;
+      }
+      const { game: m } = await api("/rawg/details", { id: matches[0].rawgId });
+      if (titleKey(m.title) !== titleKey(g.title)) {
+        unmatched.push(g);
+        continue;
+      }
+      const platform = m.platforms.find(
+        (p) => normalizePlatform(p.name) === normalizePlatform(g.platform),
+      );
+      if (!platform) {
+        unmatched.push(g);
+        continue;
+      }
+      const merged = enrichGame(g, m, platform);
+      const changes = ["genre", "releaseDate", "developer", "cover"].filter(
+        (f) => merged[f] && merged[f] !== g[f],
+      );
+      if (changes.length) proposals.push({ g, merged, changes });
+      else unmatched.push(g);
+    } catch (err) {
+      error = err.message;
+      break;
+    }
+    if (isCurrent(version))
+      $("#batch-status").textContent =
+        `${proposals.length} proposals found · ${unmatched.length} need manual review`;
+  }
+  if (!isCurrent(version) || user?.uid !== owner) return;
+  modal(
+    `<h2>Review metadata suggestions</h2><p>${proposals.length} exact title/platform matches. Check the proposed fields before saving. Unmatched and unchecked games remain in your queue.</p>${error ? `<div class="notice">${e(error)} Matches already found can still be saved.</div>` : ""}<div id="dialog-error" role="alert" hidden></div>${proposals.map((p, i) => `<label class="review-filter"><input type="checkbox" data-proposal="${i}"><span><strong>${e(p.g.title)} · ${e(p.g.platform)}</strong><br>${p.changes.map((f) => `${e(f)}: ${e(f === "cover" ? "add RAWG image" : p.merged[f])}`).join("<br>")}</span></label>`).join("")}<button id="save-proposals" class="primary" ${proposals.length ? "" : "disabled"}>Fill selected missing fields</button><button id="batch-back">Back to queue</button>`,
+  );
+  $("#batch-back").onclick = metadataQueue;
+  $("#save-proposals").onclick = async (ev) => {
+    const selected = [
+      ...document.querySelectorAll("[data-proposal]:checked"),
+    ].map((el) => proposals[Number(el.dataset.proposal)]);
+    if (!selected.length) {
+      inlineError("Choose at least one suggestion.");
+      return;
+    }
+    ev.target.disabled = true;
+    try {
+      for (const p of selected) {
+        if (user?.uid !== owner) throw Error("Your account changed.");
+        const current = activeGames().find((g) => g.id === p.g.id);
+        if (current)
+          await saveGame(mergeMissingDetails(current, p.merged), {
+            metadataOnly: true,
+          });
+      }
+      metadataQueue();
+      toast("Selected missing fields filled.");
+    } catch (err) {
+      inlineError(err.message);
+      ev.target.disabled = false;
+    }
+  };
+}
+function sourceLinks(sources = []) {
+  const safe = sources.filter((url) => /^https:\/\//.test(url));
+  return safe.length
+    ? `<details class="recap-sources"><summary>Story sources</summary>${safe.map((url) => `<p><a class="link" href="${e(url)}" target="_blank" rel="noopener noreferrer">${e(sourceName(url))} ↗</a></p>`).join("")}</details>`
+    : "";
+}
 function recapContent(g) {
   const latest = [...g.history].reverse().find((h) => h.recap);
   return latest
-    ? `<p class="muted">Through ${e(latest.label)} · ${e(new Date(latest.date).toLocaleDateString())}${latest !== g.history.at(-1) ? " · this recap predates your latest update" : ""}</p><div class="recap">${e(latest.recap)}</div>`
+    ? `<p class="muted">Through ${e(latest.label)} · ${e(new Date(latest.date).toLocaleDateString())}${latest !== g.history.at(-1) ? " · this recap predates your latest update" : ""}</p><div class="recap">${e(latest.recap)}</div>${sourceLinks(latest.sources)}`
     : '<p class="muted">Your story recap will appear here after a confirmed progress update.</p>';
 }
 function recapStatus(g) {
@@ -560,16 +797,19 @@ function recapStatus(g) {
     return '<div class="notice" role="status">Progress saved. Generating your story recap… You can close this screen.</div>';
   if (!h.recap)
     return `<div class="notice" role="status"><strong>Progress saved · recap unavailable</strong><p>${e(h.recapError || (h.recapStatus === "pending" ? "Recap generation was interrupted. Retry when you’re ready." : "Generate a recap for this stopping point."))}</p>${user && config.apiBase ? '<button id="retry-recap">Retry recap</button>' : '<button id="recap-signin">Sign in to generate a recap</button>'}</div>`;
-  return h.recapWarning
-    ? `<div class="notice" role="status">${e(h.recapWarning)}</div>`
+  return h.recapError || h.recapWarning
+    ? `<div class="notice" role="status">${e(h.recapError || h.recapWarning)}<p>Your saved recap is still available below.</p></div>`
     : "";
 }
 function bindRecap(g) {
+  $("#regenerate-recap")?.addEventListener("click", () =>
+    generateRecap(g.id, g.history.at(-1).id),
+  );
   $("#retry-recap")?.addEventListener("click", () =>
     generateRecap(g.id, g.history.at(-1).id),
   );
   $("#recap-signin")?.addEventListener("click", () =>
-    signIn(() => detail(g.id)),
+    signIn(() => continueStoryAfterSignIn(g)),
   );
 }
 function refreshRecap(id) {
@@ -590,7 +830,7 @@ function detail(id, draft = "", tab = detailTab) {
  <div class="detail-progress"><div class="progress-row"><span>${labels[g.status]}</span><strong>${percentLabel(g)} main story${g.history.at(-1)?.estimated ? " · estimated" : ""}</strong></div><progress value="${g.percent}" max="100" aria-label="Main story progress"></progress></div>
  <div class="dialog-tabs" role="tablist" aria-label="Game story"><button role="tab" id="tab-story" aria-controls="panel-story" aria-selected="${tab === "story"}" tabindex="${tab === "story" ? 0 : -1}" data-tab="story">Story so far</button><button role="tab" id="tab-update" aria-controls="panel-update" aria-selected="${tab === "update"}" tabindex="${tab === "update" ? 0 : -1}" data-tab="update">Update progress</button><button role="tab" id="tab-journal" aria-controls="panel-journal" aria-selected="${tab === "journal"}" tabindex="${tab === "journal" ? 0 : -1}" data-tab="journal">Journal</button></div>
  <div id="recap-status" aria-live="polite">${recapStatus(g)}</div>
- <section role="tabpanel" id="panel-story" aria-labelledby="tab-story" ${tab === "story" ? "" : "hidden"}><div id="recap-content">${recapContent(g)}</div></section>
+ <section role="tabpanel" id="panel-story" aria-labelledby="tab-story" ${tab === "story" ? "" : "hidden"}><div id="recap-content">${recapContent(g)}</div>${!demoGames && g.history.at(-1)?.recap && user ? '<button id="regenerate-recap">Refresh full story recap</button>' : ""}</section>
  <section role="tabpanel" id="panel-update" aria-labelledby="tab-update" ${tab === "update" ? "" : "hidden"}>${demoGames ? "<p>This sample library is read-only. Exit demo to update your own games.</p>" : `${!user ? '<div class="notice"><p>Automatic chapter lookup and story recaps need Google sign-in. You can record a completed main story offline.</p><button id="progress-signin" type="button">Sign in with Google</button></div>' : ""}<form id="progress-form"><label>Where did you leave off?<textarea name="update" required maxlength="2000" placeholder="I just finished chapter 8…">${e(draft)}</textarea></label><p class="muted">Describe your last completed chapter, quest, or in-game date. The app calculates main-story progress.</p><div id="dialog-error" role="alert" hidden></div><button class="primary">Calculate progress</button></form><div class="detail-actions">${g.status !== "completed" ? `<button id="pause">${g.status === "paused" ? "Resume playing" : "Pause game"}</button>` : ""}</div><details class="advanced"><summary>Advanced story milestones</summary><p class="muted">Optional: use your own verified chapter list.</p><button id="milestones">Manage milestones</button></details>`}</section>
  <section role="tabpanel" id="panel-journal" aria-labelledby="tab-journal" ${tab === "journal" ? "" : "hidden"}>${
    [...g.history]
@@ -646,17 +886,13 @@ function detail(id, draft = "", tab = detailTab) {
     keepDraft(g, ev.target.value),
   );
   $("#progress-signin")?.addEventListener("click", () =>
-    signIn(() => {
-      toast(
-        "Your draft is kept. Review local games to add them to your synced library.",
-      );
-    }),
+    signIn(() => continueStoryAfterSignIn(g, "update")),
   );
   $("#rawg-details")?.addEventListener("click", () => lookupGame(g));
   $("#edit")?.addEventListener("click", () => addDialog(g));
   $("#delete")?.addEventListener("click", () => {
     modal(
-      `<h2>Delete ${e(g.title)}?</h2><p>This removes the game and its progress journal. Download a full backup in Settings if you want to keep a copy.</p><div class="detail-actions"><button id="confirm-delete">Delete game</button><button id="cancel-delete">Back to game</button></div>`,
+      `<h2>Delete ${e(g.title)}?</h2><p>This moves the game and its progress journal to Recently removed games. You can restore it in Settings.</p><div class="detail-actions"><button id="confirm-delete">Move to recently removed</button><button id="cancel-delete">Back to game</button></div>`,
     );
     $("#cancel-delete").onclick = () => detail(id);
     $("#confirm-delete").onclick = async () => {
@@ -736,7 +972,12 @@ async function generateRecap(gameId, historyId) {
     });
     if ((user?.uid || "local") !== owner) return;
     const current = games.find((g) => g.id === gameId);
-    if (!current) return;
+    if (!current || current.deletedAt) return;
+    if (!r.recap?.trim())
+      throw Error(
+        r.warning ||
+          "No grounded full-story recap was found. Your previous recap is kept.",
+      );
     await saveGame(
       {
         ...current,
@@ -1004,23 +1245,35 @@ function mapImport(csv) {
       mapping = Object.fromEntries(
         [...new FormData(ev.target)].map(([k, v]) => [k, Number(v)]),
       );
-      reviewImport(importRows(csv, mapping), () => mapImport(csv));
+      reviewImport(
+        importRows(csv, mapping),
+        () => mapImport(csv),
+        false,
+        mapping.collection < 0,
+      );
     } catch (err) {
       inlineError(err.message);
     }
   };
 }
-function reviewImport(incoming, back = settings, localMigration = false) {
+function reviewImport(
+  incoming,
+  back = settings,
+  localMigration = false,
+  defaultCollection = false,
+) {
+  let page = 0;
+  const pageSize = 25;
   incoming = incoming.map((g) => ({
     ...g,
     platform: normalizePlatform(g.platform),
     releaseDate: normalizeReleaseDate(g.releaseDate || ""),
   }));
   modal(
-    `<h2>Review your import</h2><p>Review every game. Matches use title, platform and edition. Existing progress and recaps are preserved.</p><label>Search preview<input id="import-search" type="search" placeholder="Title, platform or edition"></label><label>When a game already exists<select id="duplicate-policy"><option value="skip">Skip duplicate games</option><option value="fill">Fill missing details only</option></select></label><p id="import-summary" role="status" aria-live="polite"></p><div id="import-validation" class="notice" role="alert" hidden></div><label class="review-filter"><input id="import-needs-review" type="checkbox"> Show only rows needing correction</label><div id="import-preview" class="import-preview"></div><div id="dialog-error" role="alert" hidden></div><div class="sticky-actions"><button id="confirm-import" class="primary">Import games</button><button id="import-back">Back</button></div>`,
+    `<h2>Review your import</h2><p>Review every game. Matches use title, platform and edition. Existing progress and recaps are preserved.</p>${defaultCollection ? '<label>Collection status was not included. Import these games into<select id="import-collection"><option value="owned">Library (owned)</option><option value="wishlist">Wishlist</option></select></label><p class="muted">You can change individual rows below.</p>' : ""}<label>Search preview<input id="import-search" type="search" placeholder="Title, platform or edition"></label><label>When a game already exists<select id="duplicate-policy"><option value="skip">Skip duplicate games</option><option value="fill">Fill missing details only</option></select></label><p id="import-summary" role="status" aria-live="polite"></p><div id="import-validation" class="notice" role="alert" hidden></div><label class="review-filter"><input id="import-needs-review" type="checkbox"> Show only rows needing correction</label><div id="import-preview" class="import-preview"></div><div class="detail-actions"><button id="preview-prev">Previous 25</button><span id="preview-page" role="status"></span><button id="preview-next">Next 25</button></div><div id="import-progress" role="status" aria-live="polite" hidden></div><progress id="import-meter" max="1" value="0" aria-label="Import progress" hidden></progress><button id="pause-import" hidden>Pause after this batch</button><div id="dialog-error" role="alert" hidden></div><div class="sticky-actions"><button id="confirm-import" class="primary">Import games</button><button id="import-back">Back</button></div>`,
   );
   const refresh = () => {
-    const plan = planImport(games, incoming),
+    const plan = planImport(activeGames(), incoming),
       fill = $("#duplicate-policy").value === "fill",
       newCount = plan.filter((p) => p.action === "add").length,
       invalid = incoming.filter(
@@ -1062,7 +1315,7 @@ function reviewImport(incoming, back = settings, localMigration = false) {
         (el) => el.dataset.previewRow,
       ),
     );
-    const plan = planImport(games, incoming),
+    const plan = planImport(activeGames(), incoming),
       q = $("#import-search").value.toLowerCase(),
       invalid = incoming.filter(
         (g) => !g.title.trim() || !validReleaseDate(g.releaseDate),
@@ -1080,21 +1333,31 @@ function reviewImport(incoming, back = settings, localMigration = false) {
     $("#confirm-import").textContent = fill
       ? "Import & fill missing details"
       : `Import ${newCount} games`;
+    const previewRows = plan
+      .map((p, i) => ({ ...p, i }))
+      .filter(
+        (p) =>
+          !$("#import-needs-review").checked ||
+          !p.game.title.trim() ||
+          !validReleaseDate(p.game.releaseDate),
+      )
+      .filter((p) =>
+        [p.game.title, p.game.platform, p.game.edition]
+          .join(" ")
+          .toLowerCase()
+          .includes(q),
+      );
+    page = Math.min(
+      page,
+      Math.max(0, Math.ceil(previewRows.length / pageSize) - 1),
+    );
+    $("#preview-page").textContent =
+      `${previewRows.length} matching rows · page ${page + 1} of ${Math.max(1, Math.ceil(previewRows.length / pageSize))}`;
+    $("#preview-prev").disabled = page === 0;
+    $("#preview-next").disabled = (page + 1) * pageSize >= previewRows.length;
     $("#import-preview").innerHTML =
-      plan
-        .map((p, i) => ({ ...p, i }))
-        .filter(
-          (p) =>
-            !$("#import-needs-review").checked ||
-            !p.game.title.trim() ||
-            !validReleaseDate(p.game.releaseDate),
-        )
-        .filter((p) =>
-          [p.game.title, p.game.platform, p.game.edition]
-            .join(" ")
-            .toLowerCase()
-            .includes(q),
-        )
+      previewRows
+        .slice(page * pageSize, (page + 1) * pageSize)
         .map(
           ({ game: g, action, i }) =>
             `<details class="import-row" data-preview-row="${i}" ${openRows.has(String(i)) ? "open" : ""}><summary><strong>${e(g.title || "Missing title")}</strong><span>${e(g.platform)}${g.edition ? " · " + e(g.edition) : ""}</span><span class="badge">${action === "add" ? "New" : fill ? "Fill missing only" : "Skip duplicate"}${!validReleaseDate(g.releaseDate) ? " · Check date" : ""}</span></summary><div class="mapping">${[
@@ -1132,7 +1395,22 @@ function reviewImport(incoming, back = settings, localMigration = false) {
         }),
     );
   };
-  $("#import-search").oninput = draw;
+  $("#preview-prev").onclick = () => {
+    page--;
+    draw();
+  };
+  $("#preview-next").onclick = () => {
+    page++;
+    draw();
+  };
+  $("#import-collection")?.addEventListener("change", (ev) => {
+    incoming.forEach((g) => (g.collection = ev.target.value));
+    draw();
+  });
+  $("#import-search").oninput = () => {
+    page = 0;
+    draw();
+  };
   $("#duplicate-policy").onchange = draw;
   $("#import-needs-review").onchange = draw;
   $("#import-back").onclick = back;
@@ -1146,43 +1424,62 @@ function reviewImport(incoming, back = settings, localMigration = false) {
     $("#import-back").disabled = true;
     let added = 0,
       updated = 0;
+    importBusy = true;
+    importPause = false;
+    const controls = [
+      ...document.querySelectorAll(
+        "#modal-body input,#modal-body select,#preview-prev,#preview-next",
+      ),
+    ];
+    controls.forEach((el) => (el.disabled = true));
+    const meter = $("#import-meter"),
+      status = $("#import-progress"),
+      pause = $("#pause-import");
+    meter.hidden = status.hidden = pause.hidden = false;
+    pause.onclick = () => {
+      importPause = true;
+      pause.disabled = true;
+      status.textContent = "Pausing after this batch…";
+    };
     try {
-      for (const incomingGame of incoming) {
+      const work = buildImportWork(activeGames(), incoming, fill);
+      meter.max = Math.max(1, work.length);
+      meter.value = 0;
+      for (let i = 0; i < work.length; i += 25) {
         if ((user?.uid || "local") !== owner)
-          throw Error(
-            "Your account changed. Review the remaining games before importing.",
-          );
-        const existing = games.find((g) => key(g) === key(incomingGame));
-        if (existing) {
-          if (fill) {
-            const merged = mergeMissingDetails(existing, incomingGame);
-            if (JSON.stringify(merged) !== JSON.stringify(existing)) {
-              await saveGame(merged);
-              updated++;
-            }
-          }
-        } else {
-          await saveGame(incomingGame);
-          added++;
-        }
-        button.textContent = `Importing… ${added + updated} saved`;
+          throw Error("Your account changed. Review before retrying.");
+        if (importPause) break;
+        const chunk = work.slice(i, i + 25);
+        status.textContent = `Saving ${i + 1}–${Math.min(i + 25, work.length)} of ${work.length}…`;
+        await saveImportChunk(
+          chunk.map((p) => p.game),
+          fill,
+        );
+        added += chunk.filter((p) => p.action === "add").length;
+        updated += chunk.filter((p) => p.action !== "add").length;
+        meter.value = i + chunk.length;
+        status.textContent = `${meter.value} of ${work.length} saved`;
       }
-      if (localMigration) {
-        migrationDismissed = true;
-        render();
-      }
-      if (isCurrent(version)) {
-        $("#modal").close();
-      }
+      if (importPause) throw Error("Import paused. Saved games are safe.");
+      if (localMigration) migrationDismissed = true;
+      if (isCurrent(version)) $("#modal").close();
       toast(`${added} games added · ${updated} updated`);
     } catch (err) {
       if (isCurrent(version)) {
         inlineError(
-          `${added} added, ${updated} updated before interruption. ${err.message} Retry safely; saved games will be matched as duplicates.`,
+          `${added} added, ${updated} updated. ${err.message} Resume safely; saved games are matched as duplicates.`,
         );
+        button.textContent = "Resume remaining games";
+      } else toast(err.message);
+    } finally {
+      importBusy = false;
+      render();
+      if (isCurrent(version)) {
+        controls.forEach((el) => (el.disabled = false));
         button.disabled = false;
-        button.textContent = "Retry remaining games";
         $("#import-back").disabled = false;
+        pause.hidden = true;
+        pause.disabled = false;
       }
     }
   };
@@ -1197,7 +1494,7 @@ function steamDialog() {
     return;
   }
   modal(
-    `<h2>Import your Steam library</h2><p>Your Steam game details must be public. Enter your 17-digit Steam ID; the import previews owned games before saving.</p><form id="steam-form"><label>Steam ID<input name="steamId" required pattern="[0-9]{17}" placeholder="7656119…"></label><button class="primary">Find owned games</button></form><p class="muted">Requires Google sign-in and a backend configured with a Steam Web API key.</p>`,
+    `<h2>Import your Steam library</h2><p>Connect your Steam library through the Steam Web API. Set Steam Profile → Edit Profile → Privacy Settings → Game details to Public, then enter your 17-digit SteamID64. You’ll review the owned games before saving. Re-import later to add newly purchased games without duplicates.</p><form id="steam-form"><label>Steam ID<input name="steamId" required pattern="[0-9]{17}" placeholder="7656119…"></label><div id="dialog-error" role="alert" hidden></div><button class="primary">Find owned games</button></form><p class="muted">Requires Google sign-in and a Steam Web API key stored in Cloudflare as STEAM_API_KEY. Steam playtime and achievements do not determine main-story completion.</p>`,
   );
   $("#steam-form").onsubmit = async (ev) => {
     ev.preventDefault();
@@ -1227,7 +1524,7 @@ function steamDialog() {
       );
     } catch (err) {
       if (isCurrent(version)) {
-        toast(err.message);
+        inlineError(err.message);
         btn.disabled = false;
       }
     }
@@ -1253,7 +1550,7 @@ $("#export-btn").onclick = () => {
       "Status",
       "Progress",
     ],
-    ...games.map((g) => [
+    ...activeGames().map((g) => [
       g.title,
       g.platform,
       g.genre,
@@ -1283,8 +1580,9 @@ function settings() {
     return;
   }
   modal(
-    `<h2>Connections & settings</h2><div class="notice">${user ? "Google account connected." : "Sign in with Google for device sync and automatic details."} ${syncStatus === "error" ? "Sync needs attention." : user ? "Library sync is connected." : "Your library is stored on this device."}</div><p>Google sync keeps each game and its progress journal in your private account. Without sign-in, changes stay on this device.</p>${!user ? '<button id="settings-signin" class="primary">Sign in with Google</button>' : ""}<div class="detail-actions"><button id="backup">Download full backup</button>${user && readLocal().length ? '<button id="migrate">Import this device’s local games</button>' : ""}<label>Restore backup<input id="restore" type="file" accept=".json,application/json"></label></div><p class="muted">CSV exports contain game details. Full backups also include progress history and recaps.</p>`,
+    `<h2>Connections & settings</h2><div class="notice">${user ? "Google account connected." : "Sign in with Google for device sync and automatic details."} ${syncStatus === "error" ? "Sync needs attention." : user ? "Library sync is connected." : "Your library is stored on this device."}</div><p>Google sync keeps each game and its progress journal in your private account. Without sign-in, changes stay on this device.</p>${!user ? '<button id="settings-signin" class="primary">Sign in with Google</button>' : ""}<div class="detail-actions"><button id="backup">Download full backup</button><button id="trash">Recently removed games</button>${user && readLocal().length ? '<button id="migrate">Import this device’s local games</button>' : ""}<label>Restore backup<input id="restore" type="file" accept=".json,application/json"></label></div><p class="muted">CSV exports contain game details. Full backups also include progress history and recaps.</p>`,
   );
+  $("#trash").onclick = trashDialog;
   $("#settings-signin")?.addEventListener("click", () => signIn(settings));
   $("#migrate")?.addEventListener("click", () =>
     reviewImport(readLocal(), settings, true),
@@ -1385,15 +1683,21 @@ function subscribeLibrary() {
   $("#sync-state").textContent = "Loading your synced library…";
   unsubscribe = cloud.onSnapshot(
     cloud.collection(cloud.db, "users", uid, "games"),
+    { includeMetadataChanges: true },
     (snap) => {
       if (user?.uid !== uid) return;
       games = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
-      syncStatus = snap.metadata.hasPendingWrites ? "syncing" : "synced";
+      syncStatus = snap.metadata.fromCache
+        ? "loading"
+        : snap.metadata.hasPendingWrites
+          ? "syncing"
+          : "synced";
       syncError = "";
       $("#sync-state").textContent = snap.metadata.hasPendingWrites
         ? "Syncing changes…"
         : "Synced across devices";
-      render();
+      if (!importBusy) render();
+      finishSignIn();
     },
     (err) => {
       if (user?.uid !== uid) return;
@@ -1424,6 +1728,7 @@ async function initCloud() {
       user = u;
       if (changed) {
         migrationDismissed = false;
+        metadataBatchSeen.clear();
         demoGames = null;
         $("#modal").close();
       }
@@ -1439,11 +1744,6 @@ async function initCloud() {
         syncError = "";
         $("#sync-state").textContent = "Local library · this device only";
         render();
-      }
-      if (u && authContinuation) {
-        const next = authContinuation;
-        authContinuation = null;
-        next();
       }
     });
   } catch (err) {
@@ -1463,16 +1763,13 @@ async function signIn(continuation) {
   }
   try {
     if (user) {
-      continuation?.();
+      authContinuation = continuation;
+      finishSignIn();
       return;
     }
     authContinuation = continuation;
     await cloud.signInWithPopup(cloud.auth, new cloud.GoogleAuthProvider());
-    if (authContinuation && user) {
-      const next = authContinuation;
-      authContinuation = null;
-      next();
-    }
+    finishSignIn();
   } catch (err) {
     authContinuation = null;
     inlineError("Could not sign in. " + err.message);
@@ -1561,7 +1858,45 @@ function loadDemo() {
       milestones: [],
     }),
   );
+  demoGames.push({
+    id: "demo-story",
+    title: "The Lantern Isles",
+    platform: "PC / Steam",
+    genre: "Adventure",
+    releaseDate: "2026",
+    developer: "Fictional sample",
+    percent: 40,
+    status: "paused",
+    collection: "owned",
+    edition: "Fictional demo",
+    cover: "",
+    milestones: [],
+    history: [
+      {
+        id: "demo-entry",
+        date: "2026-09-01T00:00:00Z",
+        label: "Chapter 4 completed (fictional sample)",
+        percent: 40,
+        estimated: true,
+        sources: [],
+        recap:
+          "The journey so far\nMira left her island to investigate the fading lighthouse network. She met a navigator, Sol, and learned that missing lantern crystals were disrupting travel between the islands.\nRecent chapters\nOn the third island, Mira and Sol traced the missing supplies to an abandoned workshop. They repaired its beacon and recovered a map of the local supply route. At the end of Chapter 4, the island’s lighthouse shines again. Their partnership is stronger, but the cause of the missing crystals remains unresolved.",
+        recapStatus: "ready",
+      },
+    ],
+  });
+  demoGames.push({
+    ...demoGames[0],
+    id: "demo-wishlist",
+    title: "A future adventure (sample)",
+    collection: "wishlist",
+    percent: 0,
+    status: "not-started",
+    history: [],
+  });
   clearFilters();
+  $("#app-notice").scrollIntoView({ block: "start" });
+  $("#exit-demo").focus({ preventScroll: true });
 }
 const desktopQuery = matchMedia("(min-width:851px)");
 $("#overview").open = desktopQuery.matches;
@@ -1571,8 +1906,28 @@ desktopQuery.addEventListener("change", (ev) => {
 $("#view-toggle").onclick = () => {
   const compact = $("#games").classList.toggle("compact");
   $("#view-toggle").setAttribute("aria-pressed", String(compact));
-  $("#view-toggle").textContent = compact ? "Card view" : "List view";
+  localStorage.setItem("questtracker.compact", String(compact));
 };
+$("#games").classList.toggle(
+  "compact",
+  localStorage.getItem("questtracker.compact") === "true",
+);
+$("#view-toggle").setAttribute(
+  "aria-pressed",
+  String($("#games").classList.contains("compact")),
+);
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("#theme-mode").value = theme;
+  localStorage.setItem("questtracker.theme", theme);
+  document.querySelector('meta[name="theme-color"]').content =
+    theme === "light" ? "#f3f5ef" : "#101411";
+}
+applyTheme(
+  localStorage.getItem("questtracker.theme") ||
+    (matchMedia("(prefers-color-scheme:light)").matches ? "light" : "dark"),
+);
+$("#theme-mode").onchange = (ev) => applyTheme(ev.target.value);
 render();
 initCloud();
 

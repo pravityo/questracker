@@ -28,6 +28,12 @@
         <span class="tiny-dot"></span> Pick up where you left off.
         <p>Your games and their stories, all in one place.</p>
       </div>
+      <label class="theme-control"
+        >Appearance<select id="theme-mode" aria-label="Appearance">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select></label
+      >
       <button id="settings" aria-label="Connections and settings" class="quiet">
         ⚙ Connections & settings</button
       ><button id="login" class="account">G · Sign in with Google</button
@@ -80,7 +86,9 @@
           aria-controls="filter-panel"
         >
           Filters</button
-        ><button id="view-toggle" aria-pressed="false">List view</button>
+        ><button id="view-toggle" aria-pressed="false">
+          Compact list view
+        </button>
       </div>
       <section class="filters" id="filter-panel">
         <label

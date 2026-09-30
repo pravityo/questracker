@@ -235,3 +235,23 @@ export function calculatedProgress(result) {
     ? Math.round(result.percent)
     : null;
 }
+
+export function buildImportWork(existing, incoming, fill = false) {
+  const known = new Map(existing.map((g) => [key(g), g]));
+  const work = new Map();
+  for (const game of incoming) {
+    const identity = key(game),
+      match = known.get(identity);
+    if (!match) {
+      known.set(identity, game);
+      work.set(identity, { game, action: "add" });
+    } else if (fill) {
+      const merged = mergeMissingDetails(match, game);
+      known.set(identity, merged);
+      if (work.has(identity)) work.get(identity).game = merged;
+      else if (JSON.stringify(merged) !== JSON.stringify(match))
+        work.set(identity, { game: merged, action: "duplicate" });
+    }
+  }
+  return [...work.values()];
+}
