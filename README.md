@@ -10,7 +10,7 @@ Node 22+, no frontend dependencies or installation required:
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. Add games or import CSV immediately. Local mode uses browser storage and does not sync. The optional sample library is explicitly labeled sample data. Google, Steam, and AI buttons report configuration requirements instead of pretending to work.
+Open http://127.0.0.1:5173. Add games or import CSV immediately. Local mode uses browser storage and does not sync. The optional sample library is isolated and read-only; Exit demo returns to your real library. Google, Steam, and AI buttons report configuration requirements instead of pretending to work.
 
 ## Configure Google login and sync
 
@@ -33,7 +33,7 @@ export const config = {
 Firebase web configuration is public by design; Firestore rules enforce access. Never place OpenAI or Steam secrets here.
 
 4. Replace `YOUR_GOOGLE_EMAIL` in `firestore.rules` with your Google account email and publish these rules in the Firestore console. Only that verified Google account can read or write its library. If using the CLI, run `npx firebase-tools deploy --only firestore:rules --project YOUR_PROJECT`.
-5. Sign in. Local games stay separate; use Connections & settings → Import this device’s local games to preview and migrate them into your account.
+5. Sign in. Local games stay separate; after signing in, use the Review local games banner (or Connections & settings) to preview and migrate them into your account.
 
 Each game is its own document. Transactions merge progress entries by ID to preserve concurrent journals. Game metadata is last-write-wins. Cloud saves require a connection; errors are shown and can be retried. Firestore documents have a size limit; unusually long journals may eventually need a subcollection migration.
 
@@ -65,7 +65,7 @@ The Worker verifies the Firebase ID token through Firebase’s project-specific 
 4. The app works at `https://YOUR_USERNAME.github.io/REPOSITORY/` because assets use relative paths. You can also use a `YOUR_USERNAME.github.io` repository for the root domain. There is no client-side routing to break refreshes.
 5. Configure the Firebase authorized domain and Worker allowed origin for that hostname. Personal library data is never committed to the repository.
 
-No GitHub repository, Firebase project, Cloudflare Worker, or OpenAI account has been created or deployed by this initial build. Live integrations require the above account configuration and an end-to-end smoke test.
+The deployed app is available at https://pravityo.github.io/questracker/. Account-specific integrations still require the configuration above.
 
 ## Imports
 
@@ -108,3 +108,11 @@ Get a personal API key from https://rawg.io/apidocs (Free plan). In `backend/`, 
 Add game → Find details on RAWG searches titles. Choose the correct edition, select its platform, and review the editable form before saving. Existing games have Find missing details; the library also has Fill missing details for selecting imported games that need enrichment. This is a per-game review workflow, not an unattended bulk match. Existing populated fields, ownership and journals are preserved; Unknown platforms and Unsorted genres count as missing. Multi-genre results are individually filterable. Descriptions are deliberately excluded from provider responses to avoid importing plot spoilers. RAWG release dates may be first-release dates when platform-specific dates are absent.
 
 RAWG requests require the verified Google owner and have a separate 100-request daily cap, independent of the AI quota. RAWG attribution is shown in the app and lookup dialogs. Search and detail selection each consume one provider request. Live RAWG access must be tested after adding the secret.
+
+## Interaction and recovery
+
+- Add game starts with RAWG title search. Google sign-in is explained before searching; manual entry remains available locally.
+- Confirmed progress saves before recap generation. A persistent status shows generation or failure, and Retry recap uses the saved stopping point. Closing the dialog does not cancel generation; reloading may interrupt it, and the saved entry can be retried.
+- Story, Update progress and Journal tabs keep long recaps separate from updates. Estimated percentages use `~` consistently. Draft updates stay in session storage until saved.
+- Import review includes every row, normalizes known platform aliases and year-first dates, and flags ambiguous dates for correction. Matching includes edition. Duplicate handling either skips records or fills missing metadata while preserving progress.
+- Mobile uses collapsible overview and filters, touch-sized controls, and full-screen dialogs. Card and compact list views are available. Dialog headings, focus restoration, keyboard tab navigation and reduced motion are supported.

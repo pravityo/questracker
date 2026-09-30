@@ -1,1 +1,140 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101411"><title>QuestTracker — Your games, your story</title><link rel="stylesheet" href="./style.css"></head><body><aside><a class="brand" href="#"><span class="brand-icon">Q</span> QuestTracker</a><div class="eyebrow">YOUR COLLECTION</div><nav><button data-view="owned" class="active">▦ <span>Library</span><b id="owned-count">0</b></button><button data-view="wishlist">♡ <span>Wishlist</span><b id="wish-count">0</b></button><button data-view="progress">◷ <span>In progress</span><b id="progress-count">0</b></button></nav><div class="side-note"><span class="tiny-dot"></span> Pick up where you left off.<p>Your games and their stories, all in one place.</p></div><button id="settings" class="quiet">⚙ Connections & settings</button><button id="login" class="account">G · Sign in with Google</button><small id="sync-state">Local library · this device only</small></aside><main><header><div><div class="eyebrow">MAKE TIME FOR YOUR NEXT ADVENTURE</div><h1 id="page-title">Your library<span>.</span></h1><p id="page-subtitle">Every world you own. Every story waiting to be finished.</p></div><div class="actions"><button id="import-btn">↥ Import games</button><button id="add-btn" class="primary">＋ Add game</button></div></header><section class="stats" id="stats"></section><section id="resume"></section><section class="collection-bar"><h2 id="collection-title">All games</h2><button id="enrich-btn" class="quiet">Fill missing details</button><button id="export-btn" class="quiet">Export CSV ↗</button></section><section class="filters"><input id="search" type="search" aria-label="Search games" placeholder="⌕  Search your collection…"><select id="platform" aria-label="Platform"><option value="">All platforms</option></select><select id="genre" aria-label="Genre"><option value="">All genres</option></select><select id="status" aria-label="Progress status"><option value="">All statuses</option><option value="not-started">Not started</option><option value="playing">Playing</option><option value="paused">Paused</option><option value="completed">Completed</option></select><select id="year" aria-label="Release year"><option value="">All years</option></select><select id="sort" aria-label="Sort games"><option value="title">Title A–Z</option><option value="release">Newest release</option><option value="progress">Most progress</option></select></section><div id="results-count" class="muted"></div><section id="games" class="grid"></section><footer>YOUR NEXT CHAPTER STARTS HERE <span>QuestTracker / Main story, always. · <a class="link" href="https://rawg.io" target="_blank" rel="noopener noreferrer">Game data by RAWG</a></span></footer></main><dialog id="modal"><button class="close" aria-label="Close dialog">×</button><div id="modal-body"></div></dialog><div id="toast" role="status" aria-live="polite"></div><script type="module" src="./app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#101411" />
+    <title>QuestTracker — Your games, your story</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to collection</a>
+    <aside>
+      <a class="brand" href="#"
+        ><span class="brand-icon">Q</span> QuestTracker</a
+      >
+      <div class="eyebrow">YOUR COLLECTION</div>
+      <nav>
+        <button data-view="owned" class="active" aria-pressed="true">
+          ▦ <span>Library</span><b id="owned-count">0</b></button
+        ><button data-view="wishlist" aria-pressed="false">
+          ♡ <span>Wishlist</span><b id="wish-count">0</b></button
+        ><button data-view="progress" aria-pressed="false">
+          ◷ <span>In progress</span><b id="progress-count">0</b>
+        </button>
+      </nav>
+      <div class="side-note">
+        <span class="tiny-dot"></span> Pick up where you left off.
+        <p>Your games and their stories, all in one place.</p>
+      </div>
+      <button id="settings" aria-label="Connections and settings" class="quiet">
+        ⚙ Connections & settings</button
+      ><button id="login" class="account">G · Sign in with Google</button
+      ><small id="sync-state">Local library · this device only</small>
+    </aside>
+    <main id="main">
+      <header>
+        <div>
+          <div class="eyebrow">MAKE TIME FOR YOUR NEXT ADVENTURE</div>
+          <h1 id="page-title">Your library<span>.</span></h1>
+          <p id="page-subtitle">
+            Every world you own. Every story waiting to be finished.
+          </p>
+        </div>
+        <div class="actions">
+          <button id="import-btn">↥ Import games</button
+          ><button id="add-btn" class="primary">＋ Add game</button>
+        </div>
+      </header>
+      <section
+        id="app-notice"
+        class="app-notice"
+        role="status"
+        hidden
+      ></section>
+      <details class="stats-disclosure" id="overview">
+        <summary>Collection overview</summary>
+        <section class="stats" id="stats"></section>
+      </details>
+      <section id="resume"></section>
+      <section class="collection-bar">
+        <h2 id="collection-title">All games</h2>
+        <details class="collection-tools">
+          <summary>Collection tools</summary>
+          <div>
+            <button id="enrich-btn">Fill missing details</button
+            ><button id="export-btn">Export full collection CSV</button>
+          </div>
+        </details>
+      </section>
+      <div class="search-bar">
+        <input
+          id="search"
+          type="search"
+          aria-label="Search games"
+          placeholder="Search your collection…"
+        /><button
+          id="filter-toggle"
+          aria-expanded="false"
+          aria-controls="filter-panel"
+        >
+          Filters</button
+        ><button id="view-toggle" aria-pressed="false">List view</button>
+      </div>
+      <section class="filters" id="filter-panel">
+        <label
+          >Platform<select id="platform">
+            <option value="">All platforms</option>
+          </select></label
+        ><label
+          >Genre<select id="genre">
+            <option value="">All genres</option>
+          </select></label
+        ><label
+          >Progress status<select id="status">
+            <option value="">All statuses</option>
+            <option value="not-started">Not started</option>
+            <option value="playing">Playing</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+          </select></label
+        ><label
+          >Release year<select id="year">
+            <option value="">All years</option>
+          </select></label
+        ><label
+          >Sort games<select id="sort">
+            <option value="title">Title A–Z</option>
+            <option value="release">Newest release</option>
+            <option value="progress">Most progress</option>
+          </select></label
+        >
+      </section>
+      <div class="filter-summary">
+        <div id="active-filters"></div>
+        <button id="clear-filters" class="quiet" hidden>Clear all</button>
+      </div>
+      <div id="results-count" class="muted"></div>
+      <section id="games" class="grid"></section>
+      <footer>
+        YOUR NEXT CHAPTER STARTS HERE
+        <span
+          >QuestTracker / Main story, always. ·
+          <a
+            class="link"
+            href="https://rawg.io"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Game data by RAWG</a
+          ></span
+        >
+      </footer>
+    </main>
+    <dialog id="modal">
+      <button class="close" aria-label="Close dialog">×</button>
+      <div id="modal-body"></div>
+    </dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
