@@ -310,6 +310,11 @@ function render() {
       : view === "wishlist"
         ? "Want to play"
         : "All games";
+  const hasCollection = library.some((g) =>
+    view === "progress"
+      ? g.collection === "owned" && ["playing", "paused"].includes(g.status)
+      : g.collection === view,
+  );
   const list = filtered();
   $("#results-count").textContent =
     `${list.length} game${list.length !== 1 ? "s" : ""}`;
@@ -320,10 +325,14 @@ function render() {
             `<button class="game-card" data-game="${e(g.id)}"><div class="cover" style="--c1:${["#65663b", "#486a61", "#75624c", "#625778", "#3e6380", "#804f48"][[...g.title].reduce((n, c) => n + c.charCodeAt(0), 0) % 6]}">${g.cover && /^https:\/\//.test(g.cover) ? `<img src="${e(g.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="cover-title">${e(g.title)}</span>`}<span class="pill">${e(g.platform)}</span></div><div class="card-info"><h3>${e(g.title)}</h3><p class="card-platform">${e(g.platform)}</p>${g.edition ? `<p class="card-edition">${e(g.edition)}</p>` : ""}<p>${e(g.genre)}${g.releaseDate ? " · " + e((g.releaseDate || "").slice(0, 4)) : ""}</p><div class="progress-row"><span>${g.collection === "wishlist" ? "On your wishlist" : labels[g.status]}</span><span>${g.collection === "owned" ? percentLabel(g) : ""}</span></div>${g.collection === "owned" ? `<progress max="100" value="${g.percent}" aria-label="Main story progress"></progress>` : ""}</div></button>`,
         )
         .join("")
-    : `<div class="empty"><div class="eyebrow">A NEW SAVE FILE</div><h2>${library.length ? "No games match your filters." : "Your adventures belong here."}</h2><p>${library.length ? "Try another search or filter." : "Import your CLZ collection or add your first game."}</p>${!library.length ? '<button class="primary" id="empty-import">Import CLZ CSV</button><button id="demo">Explore a sample library</button>' : '<button id="empty-clear">Clear filters</button>'}</div>`;
+    : `<div class="empty"><div class="eyebrow">${hasCollection ? "YOUR COLLECTION" : "A NEW SAVE FILE"}</div><h2>${hasCollection ? "No games match your filters." : view === "wishlist" ? "Your wishlist starts here." : view === "progress" ? "No stories in progress yet." : "Your adventures belong here."}</h2><p>${hasCollection ? "Clear your filters to see your collection." : view === "wishlist" ? "Find a game and save it for your next adventure." : view === "progress" ? "Open a game in your library and record where you left off." : "Import your CLZ collection or add your first game."}</p>${hasCollection ? '<button id="empty-clear">Clear filters</button>' : view === "progress" ? '<button id="empty-library">Browse library</button>' : demoGames ? "" : view === "wishlist" ? '<button id="empty-add" class="primary">Add to wishlist</button>' : '<button class="primary" id="empty-import">Import CLZ CSV</button><button id="demo">Explore a sample library</button>'}</div>`;
   document
     .querySelectorAll("[data-game]")
     .forEach((b) => (b.onclick = () => detail(b.dataset.game, "", "story")));
+  $("#empty-add")?.addEventListener("click", () => lookupGame(draftGame()));
+  $("#empty-library")?.addEventListener("click", () =>
+    document.querySelector('[data-view="owned"]').click(),
+  );
   $("#empty-import")?.addEventListener("click", importDialog);
   $("#demo")?.addEventListener("click", loadDemo);
   $("#empty-clear")?.addEventListener("click", clearFilters);
