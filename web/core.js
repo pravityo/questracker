@@ -27,18 +27,52 @@ export function normalizeReleaseDate(value = "") {
   const text = value.trim();
   if (!text) return "";
   if (/^\d{4}$/.test(text)) return text;
-  const iso = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (iso) {
-    const [, y, m, d] = iso;
+  const months = {
+    jan: 1,
+    january: 1,
+    feb: 2,
+    february: 2,
+    mar: 3,
+    march: 3,
+    apr: 4,
+    april: 4,
+    may: 5,
+    jun: 6,
+    june: 6,
+    jul: 7,
+    july: 7,
+    aug: 8,
+    august: 8,
+    sep: 9,
+    sept: 9,
+    september: 9,
+    oct: 10,
+    october: 10,
+    nov: 11,
+    november: 11,
+    dec: 12,
+    december: 12,
+  };
+  let parts = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/)?.slice(1);
+  const monthFirst = text.match(
+    /^([a-z]+)\.?\s+(\d{1,2})(?:,\s*|\s+)(\d{4})$/i,
+  );
+  const dayFirst = text.match(/^(\d{1,2})\s+([a-z]+)\.?(?:,\s*|\s+)(\d{4})$/i);
+  if (monthFirst)
+    parts = [monthFirst[3], months[monthFirst[1].toLowerCase()], monthFirst[2]];
+  else if (dayFirst)
+    parts = [dayFirst[3], months[dayFirst[2].toLowerCase()], dayFirst[1]];
+  if (parts) {
+    const [y, m, d] = parts;
     const date = new Date(Date.UTC(+y, +m - 1, +d));
     if (
       date.getUTCFullYear() === +y &&
       date.getUTCMonth() === +m - 1 &&
       date.getUTCDate() === +d
     )
-      return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   }
-  // Ambiguous numeric dates are kept for review, never guessed.
+  // Ambiguous numeric dates and invalid calendar dates remain available for review.
   return text;
 }
 export function validReleaseDate(value) {

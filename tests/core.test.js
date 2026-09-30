@@ -135,3 +135,35 @@ test("duplicate enrichment never replaces progress, recaps or existing metadata"
   assert.equal(merged.status, "paused");
   assert.equal(merged.history, history);
 });
+
+test("CLZ named-month dates import automatically without bypassing calendar validation", async () => {
+  const { normalizeReleaseDate, validReleaseDate } =
+    await import("../web/core.js");
+  for (const [input, expected] of [
+    ["Nov 13, 2020", "2020-11-13"],
+    ["February 29, 2024", "2024-02-29"],
+    ["13 November 2020", "2020-11-13"],
+    ["Sept. 03, 2026", "2026-09-03"],
+  ]) {
+    assert.equal(normalizeReleaseDate(input), expected);
+    assert.equal(validReleaseDate(normalizeReleaseDate(input)), true);
+  }
+  for (const input of [
+    "Feb 29, 2023",
+    "Feb 30, 2024",
+    "Smarch 13, 2020",
+    "09/02/2024",
+  ])
+    assert.equal(validReleaseDate(normalizeReleaseDate(input)), false);
+  const csv = parseCSV(
+    'Platform,Title,Release Date,Publisher,Genre\nPlayStation 5,Test game,"Nov 13, 2020",Test publisher,RPG\nNintendo Switch,Other game,"Feb 29, 2024",Other publisher,Adventure\nNintendo 3DS,Undated game,,,Adventure',
+  );
+  const games = importRows(csv, guessMapping(csv.headers));
+  assert.equal(games.length, 3);
+  assert.deepEqual(
+    games.map((g) => g.releaseDate),
+    ["2020-11-13", "2024-02-29", ""],
+  );
+  assert.ok(games.every((g) => validReleaseDate(g.releaseDate)));
+  assert.ok(games.every((g) => g.developer === ""));
+});

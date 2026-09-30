@@ -1017,7 +1017,7 @@ function reviewImport(incoming, back = settings, localMigration = false) {
     releaseDate: normalizeReleaseDate(g.releaseDate || ""),
   }));
   modal(
-    `<h2>Review your import</h2><p>Review every game. Matches use title, platform and edition. Existing progress and recaps are preserved.</p><label>Search preview<input id="import-search" type="search" placeholder="Title, platform or edition"></label><label>When a game already exists<select id="duplicate-policy"><option value="skip">Skip duplicate games</option><option value="fill">Fill missing details only</option></select></label><p id="import-summary" role="status" aria-live="polite"></p><div id="import-preview" class="import-preview"></div><div id="dialog-error" role="alert" hidden></div><div class="sticky-actions"><button id="confirm-import" class="primary">Import games</button><button id="import-back">Back</button></div>`,
+    `<h2>Review your import</h2><p>Review every game. Matches use title, platform and edition. Existing progress and recaps are preserved.</p><label>Search preview<input id="import-search" type="search" placeholder="Title, platform or edition"></label><label>When a game already exists<select id="duplicate-policy"><option value="skip">Skip duplicate games</option><option value="fill">Fill missing details only</option></select></label><p id="import-summary" role="status" aria-live="polite"></p><div id="import-validation" class="notice" role="alert" hidden></div><label class="review-filter"><input id="import-needs-review" type="checkbox"> Show only rows needing correction</label><div id="import-preview" class="import-preview"></div><div id="dialog-error" role="alert" hidden></div><div class="sticky-actions"><button id="confirm-import" class="primary">Import games</button><button id="import-back">Back</button></div>`,
   );
   const refresh = () => {
     const plan = planImport(games, incoming),
@@ -1028,6 +1028,10 @@ function reviewImport(incoming, back = settings, localMigration = false) {
       ).length;
     $("#import-summary").textContent =
       `${newCount} new · ${plan.length - newCount} duplicates ${fill ? "to fill missing details" : "skipped"}${invalid ? " · " + invalid + " rows need correction" : ""}`;
+    $("#import-validation").hidden = !invalid;
+    $("#import-validation").textContent = invalid
+      ? `Import is paused because ${invalid} ${invalid === 1 ? "row needs" : "rows need"} a title or a valid release date. Use “Show only rows needing correction” to find them. Dates can also be left blank.`
+      : "";
     $("#confirm-import").disabled = !!invalid || (!newCount && !fill);
     $("#confirm-import").textContent = fill
       ? "Import & fill missing details"
@@ -1068,6 +1072,10 @@ function reviewImport(incoming, back = settings, localMigration = false) {
       fill = $("#duplicate-policy").value === "fill";
     $("#import-summary").textContent =
       `${newCount} new · ${duplicates} duplicates ${fill ? "to review for missing details" : "skipped"}${invalid ? " · " + invalid + " rows need correction" : ""}`;
+    $("#import-validation").hidden = !invalid;
+    $("#import-validation").textContent = invalid
+      ? `Import is paused because ${invalid} ${invalid === 1 ? "row needs" : "rows need"} a title or a valid release date. Use “Show only rows needing correction” to find them. Dates can also be left blank.`
+      : "";
     $("#confirm-import").disabled = !!invalid || (!newCount && !fill);
     $("#confirm-import").textContent = fill
       ? "Import & fill missing details"
@@ -1075,6 +1083,12 @@ function reviewImport(incoming, back = settings, localMigration = false) {
     $("#import-preview").innerHTML =
       plan
         .map((p, i) => ({ ...p, i }))
+        .filter(
+          (p) =>
+            !$("#import-needs-review").checked ||
+            !p.game.title.trim() ||
+            !validReleaseDate(p.game.releaseDate),
+        )
         .filter((p) =>
           [p.game.title, p.game.platform, p.game.edition]
             .join(" ")
@@ -1099,7 +1113,10 @@ function reviewImport(incoming, back = settings, localMigration = false) {
                 "",
               )}<label>Collection<select data-row="${i}" data-field="collection"><option value="owned" ${g.collection === "owned" ? "selected" : ""}>Owned</option><option value="wishlist" ${g.collection === "wishlist" ? "selected" : ""}>Wishlist</option></select></label></div><p class="warning" data-row-warning ${validReleaseDate(g.releaseDate) ? "hidden" : ""}>This date is ambiguous or invalid. Enter YYYY or YYYY-MM-DD, or leave it blank.</p></details>`,
         )
-        .join("") || "<p>No preview rows match your search.</p>";
+        .join("") ||
+      ($("#import-needs-review").checked
+        ? "<p>No rows need correction. Clear this filter to review all games.</p>"
+        : "<p>No preview rows match your search.</p>");
     document.querySelectorAll("[data-row]").forEach(
       (el) =>
         (el.onchange = () => {
@@ -1117,6 +1134,7 @@ function reviewImport(incoming, back = settings, localMigration = false) {
   };
   $("#import-search").oninput = draw;
   $("#duplicate-policy").onchange = draw;
+  $("#import-needs-review").onchange = draw;
   $("#import-back").onclick = back;
   draw();
   $("#confirm-import").onclick = async (ev) => {
